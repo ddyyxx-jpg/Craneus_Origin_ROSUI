@@ -1,0 +1,24 @@
+
+--- 合法 gain 3.5（应成功）
+Set parameter successful
+
+--- 越界 gain 42.0（应被拒）
+Setting parameter failed: gain 必须在 [0.0, 10.0]
+
+--- 非法 mode turbo（应被拒）
+Setting parameter failed: mode 必须是 ('low', 'normal', 'high') 之一
+
+--- 坏四元数（应被拒）
+Setting parameter failed: 四元数模长 0.000 偏离 1 超过 0.05
+
+--- 合法 pose（应成功）
+Set parameter successful
+
+--- enabled false（应成功）
+Set parameter successful
+
+--- 读回 gain
+Double value is: 3.5
+
+--- 类型不匹配 gain 42（int→double 应被拒）
+Setting parameter failed: Wrong parameter type, expected 'Type.DOUBLE' got 'Type.INTEGER'

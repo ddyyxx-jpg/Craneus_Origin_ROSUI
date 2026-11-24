@@ -40,7 +40,7 @@
 - 验收：`GraphIR`/`NodeIR`/`ParamBinding` 与主方案 §2.4 一致；`parseGraph` 对 3 个坏样例报错；vitest ≥ 8 例。
 - 证据：`pnpm -F @rosui/ir test` 输出
 
-### T-005 rosbridge 安装与连通
+### T-005 rosbridge 安装与连通 ✅ 已完成（无 root 解包，scripts/fetch-rosbridge.sh + ros-up.sh，9090 实测可连）
 - owner: C ｜ scope: `scripts/ros-up.sh`
 - depends: T-001
 - 背景：`ros-jazzy-rosbridge-suite` 2.7.1 未装，需一次 sudo 批准。
@@ -53,7 +53,7 @@
 - 验收：连接/断开/重连（指数退避）；`getParam/setParam/subscribeParamEvents` 三个方法；断线时调用方收到 `disconnected` 状态；单测用 mock ws。
 - 证据：单测 + 手动断网恢复录屏
 
-### T-007 demo 参数节点
+### T-007 demo 参数节点 ✅ 已完成（ros2/rosui_demo，证据 docs/artifacts/T-007-param-validation.txt）
 - owner: D ｜ scope: `ros2/rosui_demo/**`
 - depends: T-005
 - 验收：节点声明 `gain`(double,0..10)、`enabled`(bool)、`mode`(string enum)、`pose`(Pose)；`add_on_set_parameters_callback` 做范围校验；非法值被拒并回 reason。

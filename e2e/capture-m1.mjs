@@ -5,7 +5,7 @@ const out = 'docs/artifacts';
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 await page.goto('http://127.0.0.1:5180/', { waitUntil: 'networkidle' });
-await page.getByText(/Ready — 5 nodes/).waitFor({ timeout: 15_000 });
+await page.getByTestId('canvas-status').filter({ hasText: '就绪' }).waitFor({ timeout: 15_000 });
 await page.waitForTimeout(600);
 
 await page.screenshot({ path: `${out}/m1-connected.png` });

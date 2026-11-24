@@ -15,7 +15,9 @@ const irParam = (node: Awaited<ReturnType<typeof irNode>>, param: string) =>
 
 async function ready(page: import('@playwright/test').Page) {
   await page.goto('/');
-  await expect(page.getByText(/Ready — 5 nodes/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
+      timeout: 15_000,
+    });
 }
 
 test.describe('T-011 控件库与节点映射', () => {
@@ -27,7 +29,7 @@ test.describe('T-011 控件库与节点映射', () => {
     await expect(number).toHaveCount(1);
     await number.fill('4.5');
     await number.blur();
-    await expect(page.getByText('last gain: 4.5')).toBeVisible();
+    await expect(page.getByTestId('gain-readout')).toContainText('4.5');
     await expect.poll(async () => irParam(await irNode(page, 'Gain'), 'gain')).toBe(4.5);
 
     // text

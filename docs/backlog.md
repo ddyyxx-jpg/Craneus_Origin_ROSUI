@@ -114,38 +114,39 @@
 
 ---
 
-## M2 运行时参数绑定（对标 rqt_reconfigure，2~3 天）
+## M2 运行时参数绑定（对标 rqt_reconfigure）✅ 已完成
 
-### T-016 参数绑定 UI（C3 前置）
-- 设计约束见 `docs/adr/ADR-006-parameter-events.md`：new/changed 都要处理、首帧丢弃、2s 回声抑制、断连只读
-- owner: B ｜ scope: `apps/web/src/controls/binding.tsx`
+> 落地形态与初稿不同：没有做「static/runtime 切换开关」，而是**按绑定表默认绑定**（Gain/Switch/Mode 三个节点），Threshold 故意不绑定作对照。ADR-006 的「断连只读」也在实现后改成「断连不锁控件、只停止下发」。
+
+### T-016 参数绑定 UI + 绑定表 ✅ 已完成（apps/web/src/binding/{bindings,controlAdapter,controlState}.ts）
+- owner: B ｜ scope: `apps/web/src/binding/**`、`apps/web/src/App.tsx`
 - depends: T-006, T-011
-- 验收：控件可切换 static/runtime；runtime 时显示连接状态点（灰/绿/红）；切换不改 IR 语义。
-- 证据：截图
+- 验收：工具栏（URL/连接/断开/状态胶囊/toast）；绑定表 `Gain.gain→/rosui_demo:gain`、`Switch.enabled→enabled`、`Mode.mode→mode`，`Threshold.value` 不绑定；单测覆盖类型匹配与未绑定路径。
+- 证据：`e2e/binding.spec.ts` 第 1 条（连上后控件显示节点当前值）。
 
-### T-017 双向同步与回声抑制
-- owner: C ｜ scope: `apps/web/src/ros/sync.ts`
+### T-017 双向同步与回声抑制 ✅ 已完成（apps/web/src/binding/useParamBinding.ts）
+- owner: C ｜ scope: `apps/web/src/binding/useParamBinding.ts`
 - depends: T-016, T-007
-- 验收：UI 改 → 节点变；`ros2 param set` → UI 变；自身写入不回灌；连发 10 次不抖动；首帧事件被丢弃。
-- 证据：e2e 双向用例 + 日志
+- 验收：UI 改 → 节点变；外部 `ros2 param set` → UI 变；自身写入 2s 同值回声被吞；订阅后 300ms 首帧丢弃；失败回滚 + toast。
+- 证据：`e2e/binding.spec.ts` 第 2/4 条，`useParamBinding.test.ts` 6 例。
 
-### T-018 断线重连与状态机
-- owner: C ｜ scope: `apps/web/src/ros/reconnect.ts`
+### T-018 断线重连与状态机 ✅ 已完成
+- owner: C ｜ scope: `apps/web/src/ros/client.ts`、`apps/web/src/binding/useParamBinding.ts`
 - depends: T-017
-- 验收：重连后重放订阅、拉一次全量参数；代际号阻止旧回调写 UI；离线时控件只读 + 顶部横幅。
-- 证据：拔网线录屏 + 单测
+- 验收：指数退避重连（500ms→10s）+ 代际号；重连后重订阅并重拉全量；**断线不锁控件**，只停下发（离线可编辑，见 ADR-006 补记）。
+- 证据：`e2e/binding.spec.ts` 第 5 条；`RosClient` 单测 7 例。
 
-### T-019 一键演示环境
-- owner: Q ｜ scope: `scripts/demo.sh`、`docs/handoff/`
+### T-019 一键演示环境 ✅ 已完成（scripts/demo-stack.sh [--check]）
+- owner: Q ｜ scope: `scripts/`、`docs/handoff/`
 - depends: T-007, T-018
-- 验收：一条命令起 rosbridge + demo 节点 + 前端；5 步演示脚本（改 gain→看节点→断线→重连→值恢复）全绿。
-- 证据：`docs/artifacts/demo-<date>.mp4` + 退出码
+- 验收：一条命令起 rosbridge + demo 节点，`--check` 自检参数读写与校验拒绝；e2e 复用同一脚本（`e2e/demo-stack.ts`）。
+- 证据：`/tmp/roslog/` 日志 + `--check` 退出码 0。
 
 ### T-020 评审卡：M2 全量 + 反馈归档
 - owner: R ｜ scope: `docs/reviews/`、`docs/feedback/`
 - depends: T-017, T-018, T-019
-- 验收：八问结论；反馈表按「现象/期望/严重度/复现步骤」记录 ≥ 5 条；每条转成新卡或明确关闭理由。
-- 证据：`docs/feedback/M2.md`
+- 验收：八问结论；反馈表 ≥ 5 条；每条转成新卡或明确关闭理由。
+- 状态：独立评审已跑（m2-reviewer），结论见 `docs/reviews/M2-review.md`。
 
 ---
 

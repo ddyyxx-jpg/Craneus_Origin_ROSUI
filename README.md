@@ -2,7 +2,11 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M1 完成**（Rete 画布、四种内联控件 number/text/select/boolean、连线显隐联动、输入校验、13 条 Playwright 用例全绿；RosClient 连接层已就绪但**尚未接入 UI**；rosbridge 无 root 可跑；demo 参数节点可用）。
+当前状态：**M2 完成** —— 画布控件与 ROS 2 参数**双向绑定**跑通（真 rosbridge + 真 rclpy 节点，18 条 Playwright 全绿：13 条 UI + 5 条绑定集成）。
+
+- UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 2s 内跟着变。
+- 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。
+- 断线**不锁控件**：停止下发但保留编辑，重连以节点值为准（见 `docs/adr/ADR-006-parameter-events.md` 补记）。
 
 ## 文档入口
 
@@ -29,6 +33,8 @@ corepack pnpm build       # tsc + vite build
 corepack pnpm check       # tsc --noEmit ×2 + vitest（IR 5 例）
 
 scripts/ros-up.sh             # 起 rosbridge :9090（无 root，见下）
+scripts/demo-stack.sh         # rosbridge + demo 参数节点一起起（--check 自检读写/校验）
+node node_modules/@playwright/test/cli.js test   # 18 条 e2e（binding 那 5 条会自己拉起 demo 栈）
 scripts/test-demo-params.sh   # 验证 demo 节点 4 类参数与校验
 ```
 

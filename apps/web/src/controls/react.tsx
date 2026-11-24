@@ -3,6 +3,10 @@ import { ClassicPreset } from 'rete';
 import { Drag, Presets as ReactPresets } from 'rete-react-plugin';
 import type { GraphIR, ParamBinding } from '@rosui/ir';
 import {
+  getControlBindingState,
+  subscribeControlBindingState,
+} from '../binding/controlState';
+import {
   BooleanControl,
   SelectControl,
   TextControl,
@@ -39,6 +43,18 @@ function useControlEvents() {
   return ref;
 }
 
+/** M2：读取绑定层写入的只读/绑定态，用来渲染 data-bound 并禁用输入。 */
+function useBindingState(control: object) {
+  const [state, setState] = useState(() => getControlBindingState(control));
+  useEffect(() => subscribeControlBindingState(control, setState), [control]);
+  return state;
+}
+
+function boundAttribute(binding: { bound: boolean; readonly: boolean }): string | undefined {
+  if (!binding.bound) return undefined;
+  return binding.readonly ? 'readonly' : 'bound';
+}
+
 function errorFor(kind: RosuiControl['kind'], text: string, control: RosuiControl): string | null {
   switch (kind) {
     case 'number': {
@@ -69,25 +85,34 @@ function Feedback({ error }: { error: string | null }) {
 
 export function TextControlComponent({ data }: { data: TextControl }) {
   const ref = useControlEvents();
+  const binding = useBindingState(data);
   const [text, setText] = useState(data.text);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setText(data.text), [data.text]);
+  useEffect(() => setText(data.text), [data.text, binding.version]);
 
   return (
-    <span ref={ref} className="rosui-control" data-control-kind="text">
+    <span
+      ref={ref}
+      className="rosui-control"
+      data-control-kind="text"
+      data-bound={boundAttribute(binding)}
+    >
       <input
         type="text"
         className={error ? 'invalid' : undefined}
         data-testid="text-control"
         aria-label="text control"
         value={text}
+        readOnly={binding.readonly}
         style={{ userSelect: 'all' }}
         onChange={(event) => {
+          if (binding.readonly) return;
           const next = event.target.value;
           setText(next);
           setError(errorFor('text', next, data));
         }}
         onBlur={() => {
+          if (binding.readonly) return;
           if (!data.commitText(text)) setError(errorFor('text', text, data));
           else setError(null);
         }}
@@ -102,18 +127,26 @@ export function TextControlComponent({ data }: { data: TextControl }) {
 
 export function SelectControlComponent({ data }: { data: SelectControl }) {
   const ref = useControlEvents();
+  const binding = useBindingState(data);
   const [text, setText] = useState(data.text);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setText(data.text), [data.text]);
+  useEffect(() => setText(data.text), [data.text, binding.version]);
 
   return (
-    <span ref={ref} className="rosui-control" data-control-kind="select">
+    <span
+      ref={ref}
+      className="rosui-control"
+      data-control-kind="select"
+      data-bound={boundAttribute(binding)}
+    >
       <select
         className={error ? 'invalid' : undefined}
         data-testid="select-control"
         aria-label="select control"
         value={text}
+        disabled={binding.readonly}
         onChange={(event) => {
+          if (binding.readonly) return;
           const next = event.target.value;
           setText(next);
           if (data.commitText(next)) setError(null);
@@ -133,19 +166,30 @@ export function SelectControlComponent({ data }: { data: SelectControl }) {
 
 export function BooleanControlComponent({ data }: { data: BooleanControl }) {
   const ref = useControlEvents();
+  const binding = useBindingState(data);
+  const [value, setValue] = useState(data.value);
+  useEffect(() => setValue(data.value), [data.value, binding.version]);
   return (
-    <span ref={ref} className="rosui-control" data-control-kind="boolean">
+    <span
+      ref={ref}
+      className="rosui-control"
+      data-control-kind="boolean"
+      data-bound={boundAttribute(binding)}
+    >
       <button
         type="button"
-        className={`toggle ${data.value ? 'on' : ''}`}
+        className={`toggle ${value ? 'on' : ''}`}
         data-testid="boolean-control"
         aria-label="boolean control"
-        aria-pressed={data.value}
+        aria-pressed={value}
+        disabled={binding.readonly}
         onClick={() => {
+          if (binding.readonly) return;
           // Forcing a DOM render is required: Rete's element-level update doesn't re-mount
           // a control whose model stays the same reference.
-          const next = !data.value;
+          const next = !value;
           data.setValue(next);
+          setValue(next);
           const button = ref.current?.querySelector('button');
           if (button) {
             button.setAttribute('aria-pressed', String(next));
@@ -168,12 +212,18 @@ export function BooleanControlComponent({ data }: { data: BooleanControl }) {
 /** Render a validated number control inline. Built-in InputControl handles `change` itself. */
 export function NumberControlComponent({ data }: { data: NumberControlModel }) {
   const ref = useControlEvents();
+  const binding = useBindingState(data);
   const [text, setText] = useState(data.text);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setText(data.text), [data.text]);
+  useEffect(() => setText(data.text), [data.text, binding.version]);
 
   return (
-    <span ref={ref} className="rosui-control rosui-number-control" data-control-kind="number">
+    <span
+      ref={ref}
+      className="rosui-control rosui-number-control"
+      data-control-kind="number"
+      data-bound={boundAttribute(binding)}
+    >
       <input
         type="text"
         inputMode="decimal"
@@ -181,13 +231,16 @@ export function NumberControlComponent({ data }: { data: NumberControlModel }) {
         data-testid="number-control"
         aria-label="number control"
         value={text}
+        readOnly={binding.readonly}
         style={{ userSelect: 'all' }}
         onChange={(event) => {
+          if (binding.readonly) return;
           const next = event.target.value;
           setText(next);
           setError(errorFor('number', next, data));
         }}
         onBlur={() => {
+          if (binding.readonly) return;
           if (!data.commitText(text)) setError(errorFor('number', text, data));
           else setError(null);
         }}

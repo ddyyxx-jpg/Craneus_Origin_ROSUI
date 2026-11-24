@@ -108,10 +108,9 @@ export class NumberControl
 
   constructor(options: NumberOptions = {}) {
     const initial = options.initial ?? 0;
-    super('number', {
-      initial,
-      change: (value) => options.change?.({ value, text: String(value), valid: true }),
-    });
+    // 不把 change 交给基类闭包：基类会记住构造时的回调，导致外部对 this.onChange 的包装（绑定层）
+    // 对 number 控件失效。统一走 this.onChange，与 Text/Select/Boolean 一致。
+    super('number', { initial });
     this.initial = initial;
     this.value = initial;
     this.text = String(initial);
@@ -126,10 +125,14 @@ export class NumberControl
   onChange?: ControlValueChange;
 
   override setValue(value?: number): void {
+    const previous = this.value;
     super.setValue(value);
     this.value = value;
     this.text = String(this.value);
     this.valid = true;
+    if (!Object.is(previous, value)) {
+      this.onChange?.({ value: value as number, text: this.text, valid: true });
+    }
   }
 
   commitText(text: string): boolean {

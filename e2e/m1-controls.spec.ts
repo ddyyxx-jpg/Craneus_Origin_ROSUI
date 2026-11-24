@@ -9,7 +9,9 @@ test.describe('M1 · 端口内联控件与显隐联动', () => {
 
     await page.goto('/');
     await expect(page.getByText('ROSUI', { exact: true })).toBeVisible();
-    await expect(page.getByText(/Ready — 5 nodes/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
+      timeout: 15_000,
+    });
 
     // 演示图覆盖 Gain / Threshold / Label / Mode / Switch 五种节点
     for (const label of ['Gain', 'Threshold', 'Label', 'Mode', 'Switch']) {
@@ -20,7 +22,9 @@ test.describe('M1 · 端口内联控件与显隐联动', () => {
 
   test('C1：未连线的输入端口上有一个可编辑的数字控件', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByText(/Ready — 5 nodes/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
+      timeout: 15_000,
+    });
 
     const controls = page.locator('[data-testid="number-control"]');
     // 只有「未连线」的那一侧端口保留控件；被连线的那一侧控件应被 showInputControl 隐藏
@@ -30,12 +34,14 @@ test.describe('M1 · 端口内联控件与显隐联动', () => {
     await controls.fill('3.5');
     await controls.blur();
     // 控件 change 回调 -> React state -> 工具栏显示（number 模型仍是内置 InputControl('number')）
-    await expect(page.getByText('last gain: 3.5')).toBeVisible();
+    await expect(page.getByTestId('gain-readout')).toContainText('3.5');
   });
 
   test('C2b：删掉连线后控件 300ms 内恢复', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByText(/Ready — 5 nodes/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
+      timeout: 15_000,
+    });
 
     await expect(page.locator('[data-testid="number-control"]')).toHaveCount(1);
     // dev 模式下 App 把 editor handle 挂到 window.__rosui
@@ -49,7 +55,9 @@ test.describe('M1 · 端口内联控件与显隐联动', () => {
 
   test('C2：被连线端口的控件隐藏、label 出现', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByText(/Ready — 5 nodes/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
+      timeout: 15_000,
+    });
 
     // 连线那侧的 input 行渲染的是端口 label（gain→value），不是控件
     await expect(page.locator('.input-title', { hasText: 'value' })).toHaveCount(1);

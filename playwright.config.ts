@@ -4,6 +4,9 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
+  // 单 worker：binding.spec 会起真 ROS 栈（rosbridge + rclpy 节点），与纯 UI 用例并行时会抢资源，
+  // 曾出现 page fixture 30s 超时。串行跑 18 条 ~60s，可接受。
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:5180',

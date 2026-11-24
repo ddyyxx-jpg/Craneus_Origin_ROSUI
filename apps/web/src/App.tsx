@@ -48,11 +48,13 @@ export function App() {
     [refresh],
   );
 
+  // 只依赖稳定的 onControlChange：依赖整个 binding 对象会让 status/toast 一变就重建画布。
+  const { onControlChange } = binding;
   const handleUserChange = useCallback(
     (nodeType: string, portKey: string, value: ParamValue) => {
-      binding.onControlChange(nodeType, portKey, value);
+      onControlChange(nodeType, portKey, value);
     },
-    [binding],
+    [onControlChange],
   );
 
   useEffect(() => {
@@ -61,6 +63,7 @@ export function App() {
 
     let disposed = false;
     let handle: EditorHandle | null = null;
+    const unregisters: Array<() => void> = [];
 
     void createEditor(container)
       .then(async (created) => {
@@ -94,14 +97,14 @@ export function App() {
             control: node.control,
             onUserChange: handleUserChange,
           });
-          binding.register(item.nodeType, item.portKey, {
+          unregisters.push(binding.register(item.nodeType, item.portKey, {
             ...adapter,
             setValue(value, origin) {
               adapter.setValue(value, origin);
               if (typeof value === 'number') setLastGain(value);
               refresh();
             },
-          });
+          }));
         }
 
         setReady(true);
@@ -114,6 +117,8 @@ export function App() {
 
     return () => {
       disposed = true;
+      for (const unregister of unregisters) unregister();
+      unregisters.length = 0;
       handle?.destroy();
       handleRef.current = null;
     };

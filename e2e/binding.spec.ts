@@ -39,9 +39,9 @@ test('控件改值 → 节点侧真的变了', async ({ page }) => {
   await connect(page);
   await gainControl(page).fill('3.5');
   await gainControl(page).blur();
-  await expect.poll(() => ros2('ros2 param get /rosui_demo gain'), { timeout: 15_000 }).toContain(
-    '3.5',
-  );
+  await expect
+    .poll(() => ros2('ros2 param get /rosui_demo gain'), { timeout: 15_000 })
+    .toMatch(/value is: 3\.5$/);
   await expect(page.getByTestId('ros-toast')).toHaveCount(0);
 });
 
@@ -57,7 +57,7 @@ test('越界值被本地校验拦下：不发 ROS、不弹 toast（服务端拒�
   await expect(page.getByTestId('control-error')).toContainText('≤ 10');
   await expect(page.getByTestId('ros-toast')).toHaveCount(0);
   await page.waitForTimeout(800);
-  expect(ros2('ros2 param get /rosui_demo gain')).toContain('4.0');
+  expect(ros2('ros2 param get /rosui_demo gain')).toMatch(/value is: 4(\.0)?$/);
 });
 
 test('外部改参数 → 控件 2 秒内跟着变', async ({ page }) => {

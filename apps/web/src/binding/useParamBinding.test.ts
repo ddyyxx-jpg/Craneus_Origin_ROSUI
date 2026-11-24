@@ -123,6 +123,44 @@ describe('ParamBindingController', () => {
     controller.dispose();
   });
 
+  it('拉初值迟到：期间用户已改值，迟到的 getParam 不覆盖输入', async () => {
+    const f = fakeClient();
+    let release: ((value: number) => void) | undefined;
+    f.client.getParam = () =>
+      new Promise<ParamGetResult>((resolve) => {
+        release = (value) => resolve({ name: '/rosui_demo:gain', type: 'double', value });
+      });
+    const c = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({ client: f.client, onError: () => undefined });
+    controller.register('Gain', 'gain', c.control);
+    await f.client.connect();
+    await flush();
+
+    controller.onControlChange('Gain', 'gain', 3.5);
+    expect(f.setCalls).toEqual([{ name: '/rosui_demo:gain', value: 3.5 }]);
+
+    release?.(1);
+    await flush();
+    // 初值 1 已过期：不能把用户刚敲的 3.5 覆盖回 1
+    expect(c.values.some((v) => v.origin === 'init')).toBe(false);
+    controller.dispose();
+  });
+
+  it('同 key 重注册先清理旧 entry，订阅不泄漏', async () => {
+    const f = fakeClient({ '/rosui_demo:gain': 1 });
+    const a = fakeControl('Gain', 'gain');
+    const b = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({ client: f.client, onError: () => undefined });
+    controller.register('Gain', 'gain', a.control);
+    await f.client.connect();
+    await flush();
+    controller.register('Gain', 'gain', b.control);
+    await flush();
+    expect(f.listenerCount('/rosui_demo:gain')).toBe(1);
+    controller.dispose();
+    expect(f.listenerCount('/rosui_demo:gain')).toBe(0);
+  });
+
   it('未绑定控件不受连接状态影响，readonly 始终 false', async () => {
     const f = fakeClient();
     const c = fakeControl('Threshold', 'value');

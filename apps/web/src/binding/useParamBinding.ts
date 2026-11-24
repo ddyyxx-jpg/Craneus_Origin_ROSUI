@@ -55,6 +55,10 @@ interface Entry {
   echoUntil: number;
   unsubscribe?: () => void;
   active: boolean;
+  /** activate 代际号：丢弃迟到的 getParam 结果（例如 connect 期间用户已改值 / 又断连）。 */
+  activateToken: number;
+  /** 用户改值序号：只让最新一次 setParam 的结果决定回滚或确认。 */
+  writeSeq: number;
 }
 
 /**
@@ -97,6 +101,10 @@ export class ParamBindingController {
       control.setReadonly(false);
       return () => undefined;
     }
+    // 同 key 重注册（React 重渲染 / StrictMode 双挂载）时先清掉旧 entry，否则旧订阅泄漏。
+    const previous = this.entries.get(key);
+    if (previous) this.disposeEntry(previous);
+
     const entry: Entry = {
       key,
       control,
@@ -105,6 +113,8 @@ export class ParamBindingController {
       warmupUntil: 0,
       echoUntil: 0,
       active: false,
+      activateToken: 0,
+      writeSeq: 0,
     };
     this.entries.set(key, entry);
     // 离线也可编辑：未连接时改动只留在 IR 里，不发 ROS，避免「设计态被锁死」。
@@ -130,10 +140,13 @@ export class ParamBindingController {
     }
     if (sameValue(value, entry.lastKnownGood)) return;
 
+    const writeSeq = ++entry.writeSeq;
     const ref = entry.definition.ref;
     void this.client.setParam(ref, value).then(
       (result) => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
+        // 期间用户又改了值：旧结果已过期，交给最新那次处理。
+        if (entry.writeSeq !== writeSeq) return;
         if (result.successful) {
           entry.lastKnownGood = value;
           // 成功写后 2 秒内忽略同值事件（echo suppression）。
@@ -145,6 +158,7 @@ export class ParamBindingController {
       },
       (error: unknown) => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
+        if (entry.writeSeq !== writeSeq) return;
         entry.control.setValue(entry.lastKnownGood, 'rollback');
         this.onError(error instanceof Error ? error.message : String(error));
       },
@@ -192,10 +206,15 @@ export class ParamBindingController {
     if (entry.active) return;
     // 标记 active 防止 getParam 微任务未完成时重复拉取。
     entry.active = true;
+    const token = ++entry.activateToken;
+    const writeSeqAtRequest = entry.writeSeq;
     const ref = entry.definition.ref;
     void this.client.getParam(ref).then(
       (result) => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
+        if (entry.activateToken !== token || !entry.active) return;
+        // 拉初值期间用户已经改过值：用户输入优先，别被迟到的 getParam 覆盖。
+        if (entry.writeSeq !== writeSeqAtRequest) return;
         if (!matchesBindingType(result.value, entry.definition.valueType)) {
           entry.control.setReadonly(true);
           return;
@@ -211,6 +230,7 @@ export class ParamBindingController {
       },
     ).finally(() => {
       if (this.disposed || this.entries.get(entry.key) !== entry) return;
+      if (entry.activateToken !== token || !entry.active) return;
       // 订阅在初值拉取完成后建立，首帧 300ms 窗口从此时开始。
       entry.warmupUntil = this.now() + INITIAL_EVENT_WINDOW_MS;
       entry.unsubscribe = this.client.subscribeParam(ref, (value) => this.onParamEvent(entry, value));

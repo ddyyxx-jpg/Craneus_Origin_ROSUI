@@ -1,0 +1,17 @@
+{
+  "name": "rosui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.2.1",
+  "scripts": {
+    "dev": "corepack pnpm --filter @rosui/web dev",
+    "build": "corepack pnpm -r build",
+    "check": "tsc -p apps/web/tsconfig.json --noEmit && tsc -p packages/ir/tsconfig.json --noEmit && corepack pnpm --filter @rosui/ir exec vitest --run",
+    "test": "corepack pnpm --filter @rosui/ir exec vitest --run"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

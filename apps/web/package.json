@@ -1,0 +1,30 @@
+{
+  "name": "@rosui/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.build.json && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@rosui/ir": "workspace:*",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "rete": "2.0.6",
+    "rete-area-plugin": "2.3.2",
+    "rete-connection-plugin": "2.0.5",
+    "rete-engine": "2.1.1",
+    "rete-react-plugin": "2.1.2",
+    "rete-render-utils": "2.0.3",
+    "styled-components": "6.6.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.8"
+  }
+}

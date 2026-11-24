@@ -345,7 +345,7 @@ Origin_ROSUI/
 
 | 问题 | 现状 | 处理 |
 |---|---|---|
-| rosbridge 未安装 | `ros-jazzy-rosbridge-suite` 候选 2.7.1 | 用 `sudo_run.sh` 安装（需一次批准） |
+| sudo 不可用 | `NoNewPrivs=1`，`sudo`/`apt install` 直接被拒 | 改为**无 root 解包**：`scripts/fetch-rosbridge.sh` 下载 deb 到 `vendor/prefix`，`scripts/ros-up.sh` 设 `AMENT_PREFIX_PATH/PYTHONPATH/LD_LIBRARY_PATH` 启动（已实测 9090 可连、rosapi 可用） |
 | npm 缓存有 root 残留 | `~/.npm/_cacache` EACCES | 不用全局缓存，`.npmrc` 指到仓库内 `.npm-cache` |
 | 代理未开时 npm 不通 | 127.0.0.1:7890 拒绝连接 | 项目 `.npmrc` 用 npmmirror；需要 GitHub 时再开代理 |
 | ROS 日志目录 | 默认 `~/.ros/log` 可能不可写 | 所有脚本 `export ROS_LOG_DIR=/tmp/roslog` |
@@ -613,44 +613,34 @@ await expect(page.getByTestId('input-control-gain')).toHaveValue('7.0', { timeou
 | R6 | 画布快捷键冲突 | 输入框里按空格拖动整个画布 | 控件内 `stopPropagation`，画布快捷键判断 `activeElement` |
 | R7 | 缩放模糊 | DOM 控件在高倍缩放下发虚 | 接受（ComfyUI 同样）；必要时 `transform: scale()` 反向补偿 |
 | R8 | 子代理改到别人文件 | 合并冲突/回归 | 写域表 + L 独占根配置 + 每卡 review diff |
-| R9 | 沙箱/权限 | apt、写家目录被拒 | 统一走 `sudo_run.sh`；产物全落仓库 |
+| R9 | 权限受限 | `NoNewPrivs=1` 导致 sudo/apt 全废 | 走「apt-get download + dpkg-deb -x 到 vendor/prefix」的无 root 方案；产物全落仓库 |
 | R10 | 演示环境不安全 | 任意 Origin 可连 9090 | 只绑内网 IP、演示后关闭、后续加反代鉴权 |
 
 ---
 
-## 9. 今天就能做的 5 件事
+## 9. 已完成 / 待办（2026-11-24 晚实测更新）
+
+**已落地**（本仓可直接跑）：
 
 ```bash
-# 1) 初始化仓库与目录
-cd /home/ddyyxx/Origin_ROSUI
-git init -b main
-mkdir -p apps/web/src/{editor,controls,ros} packages/ir/src services/bridge \
-         ros2/rosui_demo e2e scripts docs/{adr,handoff,feedback,artifacts}
-printf 'registry=https://registry.npmmirror.com\ncache=.npm-cache\n' > .npmrc
+# 仓库已 git init 并推送到 https://github.com/ddyyxx-jpg/Craneus_Origin_ROSUI
 
-# 2) 装 rosbridge（需一次 sudo 批准；已确认候选 2.7.1）
-/home/ddyyxx/snap/dsh-linux/1/ros/tools/sudo_run.sh \
-  apt-get install -y ros-jazzy-rosbridge-suite
-
-# 3) 验证 ROS 侧链路
-source /opt/ros/jazzy/setup.bash
-export ROS_DOMAIN_ID=42 ROS_LOG_DIR=/tmp/roslog
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090 &
-ros2 run demo_nodes_cpp parameter_blackboard &
-ros2 topic echo /parameter_events rcl_interfaces/msg/ParameterEvent &
-ros2 param set /parameter_blackboard a_double_param 3.45   # 应看到事件
-
-# 4) 起前端骨架（M0）
-cd apps/web && pnpm create vite . --template react-ts && pnpm i
-pnpm add rete@2.0.6 rete-area-plugin@2.3.2 rete-connection-plugin@2.0.5 \
-         rete-react-plugin@2.1.2 rete-render-utils@2.0.3 roslib@2.1.0
-
-# 5) 建任务板：把 docs/backlog.md 里 T-001..T-006 建成 team_task
+# rosbridge：无 root 解包方案（sudo 被 NoNewPrivs 拦住，apt 不可用）
+scripts/fetch-rosbridge.sh     # 下载 6 个 deb → vendor/prefix（一次性）
+scripts/ros-up.sh              # source /opt/ros/jazzy + 挂前缀 → 起 9090
+# 实测：9090 LISTEN；ros2 service call /rosapi/get_param_names 返回 30 个参数名
 ```
 
-> 第 2 步会改系统包，执行前会先回显命令并确认；第 5 步由 lead 在会话内建卡。
+**还差**：
 
----
+| # | 事项 | 阻塞点 |
+|---|---|---|
+| 1 | M1 前端骨架（Vite + Rete + 内联控件 + 显隐联动） | 进行中（web-dev） |
+| 2 | demo 参数节点（4 类型 + set 回调） | 未开始，M2 验收依赖它 |
+| 3 | z-localization 的 `zlio` 参数接入 | 静态参数，需先加 callback（见 docs/integration-target.md） |
+| 4 | Playwright e2e | 依赖 1、2 |
+
+> 保留原计划里的一条：`ros2 run demo_nodes_cpp parameter_blackboard` 是验证 `/parameter_events` 事件形态最快的手段，M2 前先跑一次看 `new_parameters` 到底怎么落。
 
 ## 10. 附录：提示词模板
 

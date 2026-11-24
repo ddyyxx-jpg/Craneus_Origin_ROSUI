@@ -47,7 +47,7 @@
 - 验收：`ros2 launch rosbridge_server rosbridge_websocket_launch.xml` 起 9090；`wss`/`ws` 握手成功；`scripts/ros-up.sh` 幂等（已起则跳过）。
 - 证据：launch 日志 + ws 连接截图
 
-### T-006 RosClient 连接层（无 UI）🔨 进行中（bridge-dev）
+### T-006 RosClient 连接层（无 UI）✅ 已完成（apps/web/src/ros/，7 例单测 + dev-probe 真机联调 PASS）
 - owner: C ｜ scope: `apps/web/src/ros/**`
 - depends: T-005
 - 验收：连接/断开/重连（指数退避）；`getParam/setParam/subscribeParamEvents` 三个方法；断线时调用方收到 `disconnected` 状态；单测用 mock ws。
@@ -81,7 +81,7 @@
 - 验收：`input.addControl(new InputControl('number',{initial, change}))`；未连线时行内可编辑并写回 IR；`pnpm check` 0。
 - 证据：截图 + 单测
 
-### T-011 控件-类型映射表 🔨 进行中（controls-dev，含 T-013/T-014）
+### T-011 控件-类型映射表 ✅ 已完成（number/text/select/boolean 四类，5 种节点）
 - owner: B ｜ scope: `apps/web/src/controls/map.ts`
 - depends: T-010
 - 验收：§2.6 表逐行有实现或明确 `todo`；double/integer/bool/string/select 全覆盖；未知类型走 JSON 兜底。
@@ -94,13 +94,13 @@
 - 验收：连线后控件 100ms 内隐藏、label 出现；断线 300ms 内恢复；多连接端口不误判；`area.update('node', id)`。
 - 证据：before/after 截图 + e2e 用例
 
-### T-013 控件交互防冲突
+### T-013 控件交互防冲突 ✅ 已完成（Drag.useNoDrag + capture 拦截）
 - owner: B ｜ scope: `apps/web/src/controls/**`
 - depends: T-012
 - 验收：控件内点击不拖节点（`Drag.useNoDrag`）；输入框内空格/方向键不驱动画布；文本可选中（`user-select: all`）。
 - 证据：录屏 3 例
 
-### T-014 守卫与校验
+### T-014 守卫与校验 ✅ 已完成（越界/NaN/空串/非法枚举不写 IR）
 - owner: B ｜ scope: `apps/web/src/controls/validate.ts`
 - depends: T-011
 - 验收：NaN/越界/空串被拦并给 inline 错误；不合法值不发 `setParam`；zod schema 与 IR 同源。

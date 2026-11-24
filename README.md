@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M1 骨架已跑通**（Rete 画布 + 端口内联数字控件 + 连线显隐联动；IR v1 定稿；rosbridge 无 root 可跑；demo 参数节点可用）。
+当前状态：**M1 完成**（Rete 画布、四种内联控件 number/text/select/boolean、连线显隐联动、输入校验、13 条 Playwright 用例全绿；RosClient 连接层已就绪但**尚未接入 UI**；rosbridge 无 root 可跑；demo 参数节点可用）。
 
 ## 文档入口
 

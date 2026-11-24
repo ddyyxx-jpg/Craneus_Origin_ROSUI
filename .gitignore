@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.npm-cache/
+vendor/
+test-results/
+e2e/artifacts/
+*.log
+.DS_Store

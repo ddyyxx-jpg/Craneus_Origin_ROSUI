@@ -11,7 +11,7 @@
 
 ## M0 环境与骨架（半天，目标是"能跑起来"）
 
-### T-001 仓库初始化与工程基线
+### T-001 仓库初始化与工程基线 ✅ 已完成
 - owner: L ｜ scope: `/`（根配置）、`.npmrc`、`.gitignore`、`package.json`、`tsconfig.base.json`
 - depends: —
 - 背景：空目录起步，pnpm workspace 三段（apps/web、packages/ir、ros2 不进 workspace）。
@@ -22,19 +22,19 @@
   - [ ] `pnpm check` 脚本存在（tsc --noEmit + eslint + vitest --run）
 - 证据：命令 + 退出码
 
-### T-002 前端骨架跑通
+### T-002 前端骨架跑通 ✅ 已完成（Vite 7 + React 19，build 退出码 0）
 - owner: A ｜ scope: `apps/web/**`
 - depends: T-001
 - 验收：Vite + React 19 + TS strict；空白页面 200；`pnpm dev` 一条命令起；无 any。
 - 证据：dev server 日志 + 访问截图
 
-### T-003 Rete 画布最小可用
+### T-003 Rete 画布最小可用 ✅ 已完成（apps/web/src/rete/editor.ts）
 - owner: A ｜ scope: `apps/web/src/editor/**`
 - depends: T-002
 - 验收：拖拽建节点、拖端口连线、框选、删除；`ReactPlugin({ createRoot })`；关闭页面无 socket 泄漏警告。
 - 证据：截图 + console 无 error
 
-### T-004 IR v0 类型与 zod
+### T-004 IR v1 类型与 zod ✅ 已完成（version=1，ROS 参数类型，5 例测试）
 - owner: E ｜ scope: `packages/ir/**`
 - depends: T-001
 - 验收：`GraphIR`/`NodeIR`/`ParamBinding` 与主方案 §2.4 一致；`parseGraph` 对 3 个坏样例报错；vitest ≥ 8 例。
@@ -59,7 +59,7 @@
 - 验收：节点声明 `gain`(double,0..10)、`enabled`(bool)、`mode`(string enum)、`pose`(Pose)；`add_on_set_parameters_callback` 做范围校验；非法值被拒并回 reason。
 - 证据：`ros2 param set` 成功/失败两例输出
 
-### T-008 e2e 骨架
+### T-008 e2e 骨架 ⏳ 未开始（无 Playwright 浏览器）
 - owner: Q ｜ scope: `e2e/**`、`scripts/demo.sh`
 - depends: T-002
 - 验收：Playwright 起前端 + 断言标题；失败自动截图到 `e2e/artifacts/`；`pnpm e2e` 一条命令。
@@ -75,7 +75,7 @@
 - 验收：节点类型 → 端口定义 + 默认 widget 的映射；新增一种节点只改注册表；未知类型降级为红色占位节点。
 - 证据：单测 3 例
 
-### T-010 数字内联控件（C1）
+### T-010 数字内联控件（C1）✅ 已完成（input.addControl + change 回调）
 - owner: B ｜ scope: `apps/web/src/controls/number.tsx`
 - depends: T-009
 - 验收：`input.addControl(new InputControl('number',{initial, change}))`；未连线时行内可编辑并写回 IR；`pnpm check` 0。
@@ -87,7 +87,7 @@
 - 验收：§2.6 表逐行有实现或明确 `todo`；double/integer/bool/string/select 全覆盖；未知类型走 JSON 兜底。
 - 证据：单测逐类型断言
 
-### T-012 连线隐藏 / 断线恢复（C2）
+### T-012 连线隐藏 / 断线恢复（C2）✅ 已完成（AreaExtensions.showInputControl）
 - owner: B ｜ scope: `apps/web/src/controls/linkage.ts`
 - depends: T-010
 - 背景：优先用 `AreaExtensions.showInputControl(area)`；需要副作用时再自己挂 `connectioncreated/removed`。

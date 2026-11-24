@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**方案阶段**（仓库尚未初始化代码，见 `docs/ROSUI-落地方案.md` 的 M0）。
+当前状态：**M1 骨架已跑通**（Rete 画布 + 端口内联数字控件 + 连线显隐联动；IR v1 定稿；rosbridge 无 root 可跑；demo 参数节点可用）。
 
 ## 文档入口
 
@@ -20,15 +20,22 @@ ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点
 - **控件**（`apps/web/src/controls/`）：端口内联控件、连线显隐、复杂 DOMWidget。
 - **桥接**（`apps/web/src/ros/`）：rosbridge + rosapi + `/parameter_events` 双向同步。
 
-## 预计启动命令（M0 完成后生效）
+## 常用命令（已实测）
 
 ```bash
-pnpm install
-pnpm dev          # 起前端
-pnpm check        # tsc + eslint + vitest
-pnpm e2e          # Playwright
-scripts/demo.sh   # rosbridge + demo 节点 + 前端，一条命令
+corepack pnpm install     # 本机 PATH 无裸 pnpm，统一用 corepack
+corepack pnpm dev         # 起前端（Vite，默认 5173/5174）
+corepack pnpm build       # tsc + vite build
+corepack pnpm check       # tsc --noEmit ×2 + vitest（IR 5 例）
+
+scripts/ros-up.sh             # 起 rosbridge :9090（无 root，见下）
+scripts/test-demo-params.sh   # 验证 demo 节点 4 类参数与校验
 ```
+
+## 两个环境坑（已解决，别重踩）
+
+- **sudo 不可用**：本机 `NoNewPrivs=1`，`sudo`/`apt install` 直接被拒。rosbridge 改为 `scripts/fetch-rosbridge.sh` 下载 deb 解包到 `vendor/prefix`，`scripts/ros-up.sh` 设好 `AMENT_PREFIX_PATH/PYTHONPATH/LD_LIBRARY_PATH` 后启动（纯 Python，无需编译）。
+- **npm 缓存 EACCES**：`.npmrc` 把 cache 指到仓库内 `.npm-cache/`，registry 用 npmmirror。
 
 ## 开工前必须确认的三件事
 

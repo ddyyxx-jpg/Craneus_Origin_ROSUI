@@ -23,6 +23,10 @@ export function App() {
         }
         handle = created;
         handleRef.current = created;
+        if (import.meta.env.DEV) {
+          // e2e 用：让 Playwright 能删连线，验证「断线后控件恢复」
+          (window as unknown as { __rosui?: EditorHandle }).__rosui = created;
+        }
 
         const a = await addGainNode(created, 140, 160, (value) => setLastGain(value));
         const b = await addGainNode(created, 480, 160, (value) => setLastGain(value));

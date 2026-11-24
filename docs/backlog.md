@@ -47,7 +47,7 @@
 - 验收：`ros2 launch rosbridge_server rosbridge_websocket_launch.xml` 起 9090；`wss`/`ws` 握手成功；`scripts/ros-up.sh` 幂等（已起则跳过）。
 - 证据：launch 日志 + ws 连接截图
 
-### T-006 RosClient 连接层（无 UI）
+### T-006 RosClient 连接层（无 UI）🔨 进行中（bridge-dev）
 - owner: C ｜ scope: `apps/web/src/ros/**`
 - depends: T-005
 - 验收：连接/断开/重连（指数退避）；`getParam/setParam/subscribeParamEvents` 三个方法；断线时调用方收到 `disconnected` 状态；单测用 mock ws。
@@ -59,7 +59,7 @@
 - 验收：节点声明 `gain`(double,0..10)、`enabled`(bool)、`mode`(string enum)、`pose`(Pose)；`add_on_set_parameters_callback` 做范围校验；非法值被拒并回 reason。
 - 证据：`ros2 param set` 成功/失败两例输出
 
-### T-008 e2e 骨架 ⏳ 未开始（无 Playwright 浏览器）
+### T-008 e2e 骨架 ✅ 已完成（Playwright 4 例：C1/C2/C2b + 冒烟） ⏳ 未开始（无 Playwright 浏览器）
 - owner: Q ｜ scope: `e2e/**`、`scripts/demo.sh`
 - depends: T-002
 - 验收：Playwright 起前端 + 断言标题；失败自动截图到 `e2e/artifacts/`；`pnpm e2e` 一条命令。
@@ -81,7 +81,7 @@
 - 验收：`input.addControl(new InputControl('number',{initial, change}))`；未连线时行内可编辑并写回 IR；`pnpm check` 0。
 - 证据：截图 + 单测
 
-### T-011 控件-类型映射表
+### T-011 控件-类型映射表 🔨 进行中（controls-dev，含 T-013/T-014）
 - owner: B ｜ scope: `apps/web/src/controls/map.ts`
 - depends: T-010
 - 验收：§2.6 表逐行有实现或明确 `todo`；double/integer/bool/string/select 全覆盖；未知类型走 JSON 兜底。
@@ -117,6 +117,7 @@
 ## M2 运行时参数绑定（对标 rqt_reconfigure，2~3 天）
 
 ### T-016 参数绑定 UI（C3 前置）
+- 设计约束见 `docs/adr/ADR-006-parameter-events.md`：new/changed 都要处理、首帧丢弃、2s 回声抑制、断连只读
 - owner: B ｜ scope: `apps/web/src/controls/binding.tsx`
 - depends: T-006, T-011
 - 验收：控件可切换 static/runtime；runtime 时显示连接状态点（灰/绿/红）；切换不改 IR 语义。

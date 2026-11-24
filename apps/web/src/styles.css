@@ -26,10 +26,76 @@ html, body, #root { margin: 0; width: 100%; height: 100%; }
   cursor: pointer;
 }
 .toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+.workspace { display: flex; flex: 1 1 auto; min-height: 0; }
 .canvas {
   flex: 1 1 auto;
+  min-width: 0;
   position: relative;
   background: #15151a;
   background-image: radial-gradient(#2b2b33 1px, transparent 1px);
   background-size: 20px 20px;
 }
+.ir-panel {
+  width: 360px;
+  flex: 0 0 360px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #14141a;
+  border-left: 1px solid #333;
+}
+.ir-title { padding: 8px 12px; font-size: 12px; color: #bbb; border-bottom: 1px solid #333; }
+pre.ir-view {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 8px 12px;
+  overflow: auto;
+  max-height: 100%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9ee9a4;
+  white-space: pre;
+}
+.rosui-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.rosui-control input[type='text'],
+.rosui-control select {
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid #999;
+  border-radius: 3px;
+  background: #fff;
+  color: #111;
+}
+.rosui-control input.invalid,
+.rosui-control select.invalid { border: 2px solid #e33 !important; background: #fff0f0; }
+.control-error { color: #ff6b6b; font-size: 10px; white-space: nowrap; }
+button.toggle {
+  width: 40px;
+  height: 20px;
+  padding: 2px;
+  border: 0;
+  border-radius: 12px;
+  background: #666;
+  cursor: pointer;
+  transition: background 120ms ease;
+  display: inline-flex;
+  align-items: center;
+}
+button.toggle.on { background: #2d6cdf; }
+.toggle-knob {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translateX(0);
+  transition: transform 120ms ease;
+}
+button.toggle.on .toggle-knob { transform: translateX(20px); }

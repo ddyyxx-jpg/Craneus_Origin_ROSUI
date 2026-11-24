@@ -1,12 +1,14 @@
 import { createRoot } from 'react-dom/client';
-import { NodeEditor, ClassicPreset, type GetSchemes } from 'rete';
+import { ClassicPreset, NodeEditor, type GetSchemes } from 'rete';
 import { AreaPlugin, AreaExtensions } from 'rete-area-plugin';
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin';
-import { ReactPlugin, Presets as ReactPresets, type ReactArea2D } from 'rete-react-plugin';
+import { ReactPlugin, type ReactArea2D } from 'rete-react-plugin';
 import type { GraphIR } from '@rosui/ir';
+import { registerControls } from '../controls';
+import { RosuiNode, createNode, type NodeKind } from './nodes';
 
 type Schemes = GetSchemes<
-  ClassicPreset.Node,
+  RosuiNode,
   ClassicPreset.Connection<ClassicPreset.Node, ClassicPreset.Node>
 >;
 type Extra = ReactArea2D<Schemes>;
@@ -26,14 +28,13 @@ export async function createEditor(container: HTMLElement): Promise<EditorHandle
   const react = new ReactPlugin<Schemes, Extra>({ createRoot });
 
   connection.addPreset(ConnectionPresets.classic.setup());
-  react.addPreset(ReactPresets.classic.setup<Schemes, Extra>());
+  react.addPreset(registerControls());
 
   editor.use(area);
   area.use(connection);
   area.use(react);
 
   // Official extension: hides an input's inline control while connected, restores it on disconnect.
-  // It internally listens to connectioncreated / connectionremoved and refreshes via area.update('node', id).
   AreaExtensions.showInputControl(area);
 
   return {
@@ -45,39 +46,34 @@ export async function createEditor(container: HTMLElement): Promise<EditorHandle
   };
 }
 
-/** A Gain node: one `gain` number input with inline control, one `out` output. */
-export class GainNode extends ClassicPreset.Node {
-  constructor(initialGain = 1, onChange?: (value: number) => void) {
-    super('Gain');
+let nodeCounter = 0;
 
-    const socket = new ClassicPreset.Socket('number');
-    const input = new ClassicPreset.Input(socket, 'gain');
-    const control = new ClassicPreset.InputControl('number', {
-      initial: initialGain,
-      change: (value) => onChange?.(value),
-    });
-
-    // Important: inline control belongs to the input port, not the node.
-    input.addControl(control);
-    this.addInput('gain', input);
-    this.addOutput('out', new ClassicPreset.Output(socket, 'out'));
-  }
+export async function addNode(
+  handle: EditorHandle,
+  kind: NodeKind,
+  x: number,
+  y: number,
+  onChange?: (node: RosuiNode, value: unknown, valid: boolean) => void,
+): Promise<RosuiNode> {
+  const node = createNode(kind, onChange);
+  await handle.editor.addNode(node);
+  await handle.area.translate(node.id, { x, y });
+  nodeCounter += 1;
+  return node;
 }
 
-/** Add a Gain node at the given canvas position. */
+/** Backwards-compatible alias kept for the existing M1 spec. */
 export async function addGainNode(
   handle: EditorHandle,
   x: number,
   y: number,
   onChange?: (value: number) => void,
-): Promise<GainNode> {
-  const node = new GainNode(1, onChange);
-  await handle.editor.addNode(node);
-  await handle.area.translate(node.id, { x, y });
-  return node;
+): Promise<RosuiNode> {
+  return addNode(handle, 'gain', x, y, (_node, value) => {
+    if (typeof value === 'number') onChange?.(value);
+  });
 }
 
-/** Connect two nodes' ports. */
 export async function connect(
   handle: EditorHandle,
   source: string,
@@ -89,11 +85,11 @@ export async function connect(
   const targetNode = handle.editor.getNode(target);
   if (!sourceNode || !targetNode) throw new Error('Cannot connect: node not found');
   await handle.editor.addConnection(
-    new ClassicPreset.Connection(sourceNode, sourceOutput, targetNode, targetInput),
+    new ClassicPreset.Connection(sourceNode, sourceOutput, targetNode, targetInput) as never,
   );
 }
 
-/** Export the current editor state into a GraphIR v0 document. */
+/** Export the current editor state into a GraphIR v1 document. */
 export function toGraphIR(handle: EditorHandle): GraphIR {
   return {
     version: 1,
@@ -101,28 +97,17 @@ export function toGraphIR(handle: EditorHandle): GraphIR {
       const view = handle.area.nodeViews.get(node.id);
       return {
         id: node.id,
-        type: node.label || 'Unknown',
+        type: node.spec.type,
         position: view ? { x: view.position.x, y: view.position.y } : { x: 0, y: 0 },
-        params: Object.fromEntries(
-          Object.keys(node.inputs).map((key) => [
-            key,
-            {
-              node: node.id,
-              param: key,
-              valueType: 'double' as const,
-              mode: 'static' as const,
-              widget: 'number' as const,
-            },
-          ]),
-        ),
+        params: { [node.spec.inputKey]: node.toParamBinding() },
       };
     }),
     edges: handle.editor.getConnections().map((connection) => ({
       id: connection.id,
       source: connection.source,
-      sourcePort: connection.sourceOutput,
+      sourcePort: String(connection.sourceOutput),
       target: connection.target,
-      targetPort: connection.targetInput,
+      targetPort: String(connection.targetInput),
     })),
   };
 }

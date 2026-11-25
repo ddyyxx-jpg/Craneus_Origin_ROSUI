@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M3 完成** —— 画布控件与 ROS 2 参数双向绑定跑通，新增 Pose 复杂 DOM 控件与 `double_array` 双向绑定（真 rosbridge + 真 rclpy 节点，21 条 Playwright 全绿：13 条 UI + 5 条绑定集成 + 3 条 M3）。
+当前状态：**M4 完成** —— 画布控件 + 静态/运行时两种参数绑定、参数浏览器、Inspector 节点、节点内 JS（Web Worker 隔离）全部跑通（真 rosbridge + 真 rclpy 节点，31 条 Playwright 全绿；`vitest` 38 例）。M3 的 Pose 复杂 DOM 控件与 `double_array` 双向绑定已并入。
 
 - UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 2s 内跟着变。
 - 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`、`Pose.pose`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。

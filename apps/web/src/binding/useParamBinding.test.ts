@@ -186,6 +186,48 @@ describe('ParamBindingController', () => {
     expect(f.listenerCount('/rosui_demo:pose')).toBe(0);
   });
 
+  it('重复 bind 同一端口不重复订阅（旧 entry 先 dispose）', async () => {
+    const f = fakeClient({ '/rosui_demo:gain': 1, '/rosui_demo:mode': 'normal' });
+    const c = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({ client: f.client, onError: () => undefined });
+    controller.register('Gain', 'gain', c.control, 'n1');
+    await f.client.connect();
+    await flush();
+    controller.bind('Gain', 'gain', { node: '/rosui_demo', param: 'mode' }, 'string', 'n1');
+    controller.bind('Gain', 'gain', { node: '/rosui_demo', param: 'mode' }, 'string', 'n1');
+    await flush();
+    expect(f.listenerCount('/rosui_demo:gain')).toBe(0);
+    expect(f.listenerCount('/rosui_demo:mode')).toBe(1);
+    controller.dispose();
+    expect(f.listenerCount('/rosui_demo:mode')).toBe(0);
+  });
+
+  it('两个节点绑同一参数：各自订阅，外部改值两边都更新', async () => {
+    const f = fakeClient({ '/rosui_demo:gain': 1 });
+    const a = fakeControl('Gain', 'gain');
+    const b = fakeControl('Threshold', 'value');
+    let now = 0;
+    const controller = new ParamBindingController({
+      client: f.client,
+      onError: () => undefined,
+      now: () => now,
+    });
+    controller.register('Gain', 'gain', a.control, 'n1');
+    controller.register('Threshold', 'value', b.control, 'n2');
+    controller.bind('Gain', 'gain', { node: '/rosui_demo', param: 'gain' }, 'double', 'n1');
+    controller.bind('Threshold', 'value', { node: '/rosui_demo', param: 'gain' }, 'double', 'n2');
+    await f.client.connect();
+    await flush();
+    expect(f.listenerCount('/rosui_demo:gain')).toBe(2);
+
+    now += INITIAL_EVENT_WINDOW_MS + 1; // 越过首帧丢弃窗口
+    f.emit('/rosui_demo:gain', 4.25);
+    await flush();
+    expect(a.values.some((v) => v.value === 4.25)).toBe(true);
+    expect(b.values.some((v) => v.value === 4.25)).toBe(true);
+    controller.dispose();
+  });
+
   it('未绑定控件不受连接状态影响，readonly 始终 false', async () => {
     const f = fakeClient();
     const c = fakeControl('Threshold', 'value');

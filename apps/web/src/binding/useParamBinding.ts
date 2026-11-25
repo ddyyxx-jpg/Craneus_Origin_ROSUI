@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  bindingFor,
+  bindingForInstance,
+  clearRuntimeBinding,
   matchesBindingType,
+  setRuntimeBinding,
+  type BindingValueType,
   type ParamBindingDefinition,
 } from './bindings';
-import { RosClientImpl, type RosClient } from '../ros';
+import { RosClientImpl, getSharedClient, type RosClient } from '../ros';
 import type {
+  ParamBindingRef,
   ParamValue,
   RosStatus,
 } from '../ros';
 
 export const INITIAL_EVENT_WINDOW_MS = 300;
 export const ECHO_SUPPRESSION_MS = 2_000;
+/** 兜底对账周期：rosbridge 的 /parameter_events 没有投递保证，丢一条事件就永远不同步。 */
+export const RECONCILE_INTERVAL_MS = 5_000;
 
 /** 控件写来源，决定一次 setValue 是否应回灌 ROS。 */
 export type WriteOrigin = 'user' | 'ros' | 'init' | 'rollback';
@@ -59,6 +65,10 @@ interface Entry {
   activateToken: number;
   /** 用户改值序号：只让最新一次 setParam 的结果决定回滚或确认。 */
   writeSeq: number;
+  /** 初值 getParam 失败的重试次数（rosapi 忙时不该永久锁死控件）。 */
+  retries: number;
+  /** 首帧窗口内收到事件时，是否已经在补拉权威值（避免并发重复拉）。 */
+  warmupRefresh: boolean;
 }
 
 /** 绑定表按「节点类型:端口」查找；运行期 entry 再按节点实例区分，避免同类型多节点互相顶掉。 */
@@ -78,9 +88,12 @@ export class ParamBindingController {
   private readonly now: () => number;
   private readonly clearTimeoutFn: (handle: ReturnType<typeof setTimeout>) => void;
   private readonly entries = new Map<string, Entry>();
+  /** 所有已注册控件（含未绑定端口），供运行时 bind/unbind 即时建/拆订阅。 */
+  private readonly controls = new Map<string, BoundControl>();
   private readonly pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly statusUnsubscribe: () => void;
   private disposed = false;
+  private reconcileTimer: ReturnType<typeof setInterval> | undefined;
   private connecting: Promise<void> | undefined;
   private currentStatus: RosStatus;
 
@@ -106,12 +119,19 @@ export class ParamBindingController {
     portKey: string,
     control: BoundControl,
     instanceId?: string,
+    ref?: ParamBindingRef,
+    valueType?: BindingValueType,
   ): () => void {
     const key = entryKey(nodeType, portKey, instanceId);
-    const definition = bindingFor(nodeType, portKey);
+    this.controls.set(key, control);
+    const definition = ref
+      ? { ref, valueType: valueType ?? 'double' }
+      : bindingForInstance(nodeType, portKey, instanceId);
     if (!definition) {
       control.setReadonly(false);
-      return () => undefined;
+      return () => {
+        if (this.controls.get(key) === control) this.controls.delete(key);
+      };
     }
     // 同 key 重注册（React 重渲染 / StrictMode 双挂载）时先清掉旧 entry，否则旧订阅泄漏。
     const previous = this.entries.get(key);
@@ -127,6 +147,8 @@ export class ParamBindingController {
       active: false,
       activateToken: 0,
       writeSeq: 0,
+      retries: 0,
+      warmupRefresh: false,
     };
     this.entries.set(key, entry);
     // 离线也可编辑：未连接时改动只留在 IR 里，不发 ROS，避免「设计态被锁死」。
@@ -135,6 +157,7 @@ export class ParamBindingController {
     if (this.currentStatus === 'connected') void this.activateEntry(entry);
 
     return () => {
+      if (this.controls.get(key) === control) this.controls.delete(key);
       if (this.entries.get(key) !== entry) return;
       this.disposeEntry(entry);
       this.entries.delete(key);
@@ -149,7 +172,9 @@ export class ParamBindingController {
     instanceId?: string,
   ): void {
     const entry = this.entries.get(entryKey(nodeType, portKey, instanceId));
-    if (!entry || !entry.active || this.currentStatus !== 'connected') return;
+    // 只看「是否已绑定 + 是否连上」：activateEntry 拉初值期间（active 短暂为 false）用户改值也要下发，
+    // 否则刚 bind 就输入会静默丢失（UI 改了、ROS 没变）。
+    if (!entry || this.currentStatus !== 'connected') return;
     if (!matchesBindingType(value, entry.definition.valueType)) {
       entry.control.setValue(entry.lastKnownGood, 'rollback');
       this.onError(`${nodeType}.${portKey} 的值类型不匹配`);
@@ -195,10 +220,72 @@ export class ParamBindingController {
     this.client.close();
   }
 
+  /** M4 A：把已注册控件切换到新的运行时绑定，立即拉新参数初值。 */
+  bind(
+    nodeType: string,
+    portKey: string,
+    ref: ParamBindingRef,
+    valueType: BindingValueType,
+    instanceId?: string,
+  ): boolean {
+    const key = entryKey(nodeType, portKey, instanceId);
+    const control = this.controls.get(key);
+    // 端口没注册进绑定层时不能假成功：否则 IR 显示已绑、UI 显示「解绑」，实际没有任何订阅。
+    if (!control) return false;
+    setRuntimeBinding(nodeType, portKey, { ref, valueType }, instanceId);
+    const existing = this.entries.get(key);
+    if (existing) this.disposeEntry(existing);
+    const replacement: Entry = {
+      key,
+      control,
+      definition: { ref, valueType },
+      lastKnownGood: controlLastValue(control),
+      warmupUntil: 0,
+      echoUntil: 0,
+      active: false,
+      activateToken: 0,
+      writeSeq: 0,
+      retries: 0,
+      warmupRefresh: false,
+    };
+    this.entries.set(key, replacement);
+    replacement.control.setReadonly(false);
+    if (this.currentStatus === 'connected') void this.activateEntry(replacement);
+    return true;
+  }
+
+  /** M4 A：解除绑定，控件回到本地值，不再下发；同时清掉运行期绑定记录。 */
+  unbind(nodeType: string, portKey: string, instanceId?: string): void {
+    clearRuntimeBinding(nodeType, portKey, instanceId);
+    const key = entryKey(nodeType, portKey, instanceId);
+    const existing = this.entries.get(key);
+    if (!existing) return;
+    this.disposeEntry(existing);
+    this.entries.delete(key);
+    existing.control.setReadonly(false);
+  }
+
+  /** 周期性对账：把每个已绑定端口的权威值拉一次，弥补丢事件。 */
+  private startReconcile(): void {
+    if (this.reconcileTimer) return;
+    this.reconcileTimer = setInterval(() => {
+      for (const entry of this.entries.values()) {
+        if (entry.active) void this.refreshOnce(entry, entry.activateToken);
+      }
+    }, RECONCILE_INTERVAL_MS);
+  }
+
+  private stopReconcile(): void {
+    if (!this.reconcileTimer) return;
+    clearInterval(this.reconcileTimer);
+    this.reconcileTimer = undefined;
+  }
+
   /** 完整清理：连接状态订阅、参数订阅、所有 timer。 */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.stopReconcile();
     this.statusUnsubscribe();
     for (const entry of this.entries.values()) this.disposeEntry(entry);
     this.entries.clear();
@@ -208,6 +295,8 @@ export class ParamBindingController {
 
   private applyStatus(status: RosStatus): void {
     const connected = status === 'connected';
+    if (connected) this.startReconcile();
+    else this.stopReconcile();
     for (const entry of this.entries.values()) {
       // 断线不锁死控件：停止下发（deactivateEntry）比禁止编辑更不容易误导用户。
       if (connected) {
@@ -243,7 +332,21 @@ export class ParamBindingController {
       },
       () => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
-        entry.control.setReadonly(true);
+        // rosapi 忙/瞬断时 getParam 会失败：重试而不是把控件永久锁死。
+        if (entry.retries >= 3) {
+          entry.control.setReadonly(true);
+          return;
+        }
+        entry.retries += 1;
+        entry.active = false;
+        const retryDelay = 800 * entry.retries;
+        const handle = setTimeout(() => {
+          this.pendingTimers.delete(handle);
+          if (this.disposed || this.entries.get(entry.key) !== entry) return;
+          if (this.currentStatus !== 'connected') return;
+          void this.activateEntry(entry);
+        }, retryDelay);
+        this.pendingTimers.add(handle);
       },
     ).finally(() => {
       if (this.disposed || this.entries.get(entry.key) !== entry) return;
@@ -251,7 +354,27 @@ export class ParamBindingController {
       // 订阅在初值拉取完成后建立，首帧 300ms 窗口从此时开始。
       entry.warmupUntil = this.now() + INITIAL_EVENT_WINDOW_MS;
       entry.unsubscribe = this.client.subscribeParam(ref, (value) => this.onParamEvent(entry, value));
+      // 订阅建立前发生的外部改值不会补发事件（例如刚连上就被 ros2 param set）。
+      // 窗口结束后补拉一次权威值，保证 UI 最终收敛。
+      const handle = setTimeout(() => {
+        this.pendingTimers.delete(handle);
+        void this.refreshOnce(entry, token);
+      }, INITIAL_EVENT_WINDOW_MS);
+      this.pendingTimers.add(handle);
     });
+  }
+
+  /** 窗口结束后补拉一次权威值：只在与 lastKnownGood 不同时更新，避免把刚写进去的值又冲掉。 */
+  private async refreshOnce(entry: Entry, token: number): Promise<void> {
+    const result = await this.client.getParam(entry.definition.ref).catch(() => null);
+    if (!result) return;
+    if (this.disposed || this.entries.get(entry.key) !== entry) return;
+    if (entry.activateToken !== token || !entry.active) return;
+    if (!matchesBindingType(result.value, entry.definition.valueType)) return;
+    if (sameValue(result.value, entry.lastKnownGood)) return;
+    entry.lastKnownGood = result.value;
+    entry.control.setValue(result.value, 'ros');
+    entry.control.setReadonly(false);
   }
 
   private deactivateEntry(entry: Entry): void {
@@ -265,7 +388,26 @@ export class ParamBindingController {
     if (this.disposed || this.entries.get(entry.key) !== entry || !entry.active) return;
     if (!matchesBindingType(value, entry.definition.valueType)) return;
     const now = this.now();
-    if (now < entry.warmupUntil) return; // 订阅后 300ms 首帧噪声丢弃
+    if (now < entry.warmupUntil) {
+      // 首帧窗口内的事件可能是订阅前的旧值，不直接采信；改为问一次权威值，
+      // 否则「刚连上就被外部改值」的事件会被窗口吞掉，UI 永远停在初值。
+      if (entry.warmupRefresh) return;
+      entry.warmupRefresh = true;
+      void this.client.getParam(entry.definition.ref).then(
+        (result) => {
+          entry.warmupRefresh = false;
+          if (this.disposed || this.entries.get(entry.key) !== entry || !entry.active) return;
+          if (!matchesBindingType(result.value, entry.definition.valueType)) return;
+          if (sameValue(result.value, entry.lastKnownGood)) return;
+          entry.lastKnownGood = result.value;
+          entry.control.setValue(result.value, 'ros');
+        },
+        () => {
+          entry.warmupRefresh = false;
+        },
+      );
+      return;
+    }
     if (now < entry.echoUntil && sameValue(value, entry.lastKnownGood)) return; // 成功写后 2s 内同值回声
     if (sameValue(value, entry.lastKnownGood)) return; // 与当前值相同忽略
     entry.lastKnownGood = value;
@@ -316,7 +458,17 @@ export interface UseParamBindingResult {
     portKey: string,
     control: BoundControl,
     instanceId?: string,
+    ref?: ParamBindingRef,
+    valueType?: BindingValueType,
   ): () => void;
+  bind(
+    nodeType: string,
+    portKey: string,
+    ref: ParamBindingRef,
+    valueType: BindingValueType,
+    instanceId?: string,
+  ): boolean;
+  unbind(nodeType: string, portKey: string, instanceId?: string): void;
   onControlChange(
     nodeType: string,
     portKey: string,
@@ -327,7 +479,7 @@ export interface UseParamBindingResult {
 
 export function useParamBinding(client?: RosClient): UseParamBindingResult {
   const injected = useRef<RosClient | undefined>(client);
-  const [instance, setInstance] = useState<RosClient>(() => injected.current ?? new RosClientImpl());
+  const [instance, setInstance] = useState<RosClient>(() => injected.current ?? getSharedClient());
   const instanceUrl = useRef(injected.current ? '' : 'ws://127.0.0.1:9090');
   const controllerRef = useRef<ParamBindingController | undefined>(undefined);
   const [status, setStatus] = useState<RosStatus>(instance.status);
@@ -383,8 +535,31 @@ export function useParamBinding(client?: RosClient): UseParamBindingResult {
 
   const disconnect = useCallback(() => controllerRef.current?.disconnect(), []);
   const register = useCallback(
-    (nodeType: string, portKey: string, control: BoundControl, instanceId?: string) =>
-      controllerRef.current?.register(nodeType, portKey, control, instanceId) ?? (() => undefined),
+    (
+      nodeType: string,
+      portKey: string,
+      control: BoundControl,
+      instanceId?: string,
+      ref?: ParamBindingRef,
+      valueType?: BindingValueType,
+    ) =>
+      controllerRef.current?.register(nodeType, portKey, control, instanceId, ref, valueType) ??
+      (() => undefined),
+    [],
+  );
+  const bind = useCallback(
+    (
+      nodeType: string,
+      portKey: string,
+      ref: ParamBindingRef,
+      valueType: BindingValueType,
+      instanceId?: string,
+    ) => controllerRef.current?.bind(nodeType, portKey, ref, valueType, instanceId) ?? false,
+    [],
+  );
+  const unbind = useCallback(
+    (nodeType: string, portKey: string, instanceId?: string) =>
+      controllerRef.current?.unbind(nodeType, portKey, instanceId),
     [],
   );
   const onControlChange = useCallback(
@@ -395,7 +570,7 @@ export function useParamBinding(client?: RosClient): UseParamBindingResult {
 
   // 保持返回对象稳定（除状态字段），避免调用方 effect 因引用变化反复重跑。
   return useMemo(
-    () => ({ status, statusDetail, toast, connect, disconnect, register, onControlChange }),
-    [status, statusDetail, toast, connect, disconnect, register, onControlChange],
+    () => ({ status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange }),
+    [status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange],
   );
 }

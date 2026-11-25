@@ -6,6 +6,7 @@ import { ReactPlugin, type ReactArea2D } from 'rete-react-plugin';
 import type { GraphIR } from '@rosui/ir';
 import { registerControls } from '../controls';
 import { RosuiNode, createNode, type NodeKind } from './nodes';
+import { serializeGraph } from './serialize';
 
 type Schemes = GetSchemes<
   RosuiNode,
@@ -16,6 +17,8 @@ type Extra = ReactArea2D<Schemes>;
 export interface EditorHandle {
   editor: NodeEditor<Schemes>;
   area: AreaPlugin<Schemes, Extra>;
+  /** 供 e2e 直接构造 ClassicPreset.Connection，避免在页面里裸 import('rete') 无法解析。 */
+  Connection: typeof ClassicPreset.Connection;
   destroy: () => void;
 }
 
@@ -55,6 +58,7 @@ export async function createEditor(
   return {
     editor,
     area,
+    Connection: ClassicPreset.Connection,
     destroy: () => {
       void area.destroy();
     },
@@ -106,23 +110,5 @@ export async function connect(
 
 /** Export the current editor state into a GraphIR v1 document. */
 export function toGraphIR(handle: EditorHandle): GraphIR {
-  return {
-    version: 1,
-    nodes: handle.editor.getNodes().map((node) => {
-      const view = handle.area.nodeViews.get(node.id);
-      return {
-        id: node.id,
-        type: node.spec.type,
-        position: view ? { x: view.position.x, y: view.position.y } : { x: 0, y: 0 },
-        params: { [node.spec.inputKey]: node.toParamBinding() },
-      };
-    }),
-    edges: handle.editor.getConnections().map((connection) => ({
-      id: connection.id,
-      source: connection.source,
-      sourcePort: String(connection.sourceOutput),
-      target: connection.target,
-      targetPort: String(connection.targetInput),
-    })),
-  };
+  return serializeGraph(handle);
 }

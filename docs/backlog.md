@@ -192,9 +192,24 @@
 - owner: L/D ｜ scope: `apps/web/src/{binding,controls,rete}/**`、`e2e/**`、`packages/ir/src/index.ts`
 - 验收：参数浏览器改默认收起 + 展开懒加载（4 并发 + 退避重试）；绑定层补 warmup 权威补拉、订阅后 300ms 对账、5s 周期对账；动态节点注册绑定层 + `bind()` 返回 boolean 回滚；Pose 字段改 `text/inputMode` + `key={label}` + 7 元兜底；IR 数组项 `.finite()`；`playwright` 31 passed 连续 3 轮。
 
-## 后续（M5，先不细化）
+## M5 打磨与验收
 
-- **M5 打磨与验收**：IR 反序列化（保存/加载 `.rosui.json`）、LOD 混合渲染与 200 节点压测、撤销/重做、复制粘贴、错误 toast 统一、AC-1..5 逐条验收。
+### T-030 图保存 / 加载 `.rosui.json` ✅ 已完成
+- owner: D ｜ scope: `apps/web/src/rete/serialize.ts`、`apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`、`e2e/save-load.spec.ts`
+- 验收：工具栏「保存」下载 GraphIR v1（节点/位置/控件值/绑定模式/连线）；「加载」经 `parseGraph` 校验后还原画布并可继续编辑；非法文件 toast 报错且不破坏当前画布；e2e 覆盖「建图→保存→刷新→加载→值/连线一致」。
+- 落地：`apps/web/src/rete/serialize.ts`（`kindForType`/`serializeGraph`/`loadGraph`）、`nodes.ts` 的 `applyParamBinding`、`App.tsx` 保存/加载按钮与动态注册清理、`e2e/save-load.spec.ts`、ADR-007。
+
+### T-031 LOD 混合渲染与 200 节点压测 ⏳ 待开始
+- owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`docs/artifacts/**`
+- 验收：缩放 < 0.35 时节点内容降级为同尺寸占位（控件不渲染），缩放回来恢复；200 节点图的首帧与拖动帧率有可复现的测量脚本与数字（记录到 `docs/reviews/M5-perf.md`）。
+
+### T-032 撤销 / 重做 + 复制粘贴 ⏳ 待开始
+- owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`
+- 验收：节点增删、连线、控件值修改可撤销/重做（Ctrl+Z / Ctrl+Shift+Z），栈深 100；复制粘贴节点保留值与位置偏移。
+
+### T-033 错误 toast 统一 + AC-1..5 逐条验收 ⏳ 待开始
+- owner: R/Q ｜ scope: `apps/web/src/**`、`docs/reviews/M5-acceptance.md`
+- 验收：所有失败路径走同一 toast 组件（连接失败/加载失败/绑定失败/写入被拒），文案可读且含参数名；AC-1..5 每条有 e2e 或截图证据，写进验收报告。
 
 ## 依赖图（ASCII）
 

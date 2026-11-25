@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GraphIR } from '@rosui/ir';
 import { CurrentIR } from './controls';
 import { createEditor, addNode, connect, toGraphIR, type EditorHandle } from './rete/editor';
+import { loadGraph } from './rete/serialize';
 import { createNode, type RosuiNode } from './rete/nodes';
 import type { ParamBindingRef, ParamValue, RosStatus } from './ros';
 import { getSharedClient } from './ros';
@@ -32,6 +33,7 @@ export function App() {
   const [url, setUrl] = useState('ws://127.0.0.1:9090');
   const [selectedPort, setSelectedPort] = useState<SelectedPort | null>(null);
   const [localToast, setLocalToast] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const binding = useParamBinding();
   // M3：动态添加的节点也要接进绑定层；unregister 在画布卸载时统一清理。
@@ -182,6 +184,50 @@ export function App() {
     [binding, handleUserChange, refresh],
   );
 
+  /** 清空动态绑定订阅：加载前调用，避免旧节点的 entry/timer 泄漏。 */
+  const clearDynamicRegistrations = useCallback(() => {
+    for (const unregister of poseUnregisters.current) unregister();
+    poseUnregisters.current.length = 0;
+    for (const unregister of dynamicUnregisters.current) unregister();
+    dynamicUnregisters.current.length = 0;
+  }, []);
+
+  const handleSaveGraph = useCallback(() => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const json = JSON.stringify(toGraphIR(editorHandle), null, 2);
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'rosui-graph.json';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, []);
+
+  const handleLoadGraph = useCallback(
+    async (file: File): Promise<void> => {
+      const editorHandle = handleRef.current;
+      if (!editorHandle) return;
+      try {
+        const text = await file.text();
+        const ir: unknown = JSON.parse(text);
+        // 先停掉旧节点的所有订阅，再清画布；新节点按恢复后的类型重新注册。
+        clearDynamicRegistrations();
+        await loadGraph(editorHandle, ir);
+        for (const node of editorHandle.editor.getNodes()) registerDynamic(node);
+        setSelectedPort(null);
+        setLastGain(null);
+        refresh();
+        setLocalToast('');
+      } catch (error: unknown) {
+        setLocalToast(`加载失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    [clearDynamicRegistrations, refresh, registerDynamic],
+  );
+
   const handleBind = useCallback(
     (ref: ParamBindingRef, valueType: BindingValueType) => {
       if (!selectedPort) return;
@@ -328,6 +374,34 @@ export function App() {
         >
           + Script
         </button>
+        <button
+          type="button"
+          data-testid="save-graph"
+          disabled={!ready}
+          onClick={handleSaveGraph}
+        >
+          保存图
+        </button>
+        <button
+          type="button"
+          data-testid="load-graph"
+          disabled={!ready}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          加载图
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="graph-file-input"
+          data-testid="load-graph-input"
+          accept=".json,.rosui.json,application/json"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleLoadGraph(file);
+            event.target.value = '';
+          }}
+        />
       </header>
       {binding.toast || localToast ? (
         <div className="ros-toast" data-testid="ros-toast" role="alert">

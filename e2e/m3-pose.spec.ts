@@ -69,3 +69,21 @@ test('外部 ros2 param set → UI 2 秒内同步', async ({ page }) => {
   await expect(page.getByTestId('pose-field').nth(2)).toHaveValue('2', { timeout: 2_000 });
   await expect(page.getByTestId('pose-field').nth(0)).toHaveAttribute('aria-label', 'pose-x');
 });
+
+test('非法字段值 → 红框、不写 ROS、不弹 toast', async ({ page }) => {
+  ros2('ros2 param set /rosui_demo pose "[1.0,2.0,3.0,0.0,0.0,0.0,1.0]"');
+  await connectAndAddPose(page);
+  await expect(page.getByTestId('pose-field').nth(1)).toHaveValue('2', { timeout: 15_000 });
+
+  const x = page.getByTestId('pose-field').nth(0);
+  await x.fill('abc');
+  await x.blur();
+
+  await expect(x).toHaveClass(/invalid/);
+  await expect(page.getByTestId('control-error')).toBeVisible();
+  await page.waitForTimeout(800);
+  expect(ros2('ros2 param get /rosui_demo pose')).toMatch(
+    /^Double values are: \[1\.0, 2\.0, 3\.0, 0\.0, 0\.0, 0\.0, 1\.0\]$/,
+  );
+  await expect(page.getByTestId('ros-toast')).toHaveCount(0);
+});

@@ -89,6 +89,8 @@ export class RosuiNode extends ClassicPreset.Node {
   readonly spec: NodeSpec;
   readonly control: RosuiControl;
   currentValue: unknown;
+  /** 最近一次从 IR 文件恢复的绑定；序列化时优先沿用其原始字段。 */
+  restoredBinding?: ParamBinding;
 
   constructor(
     spec: NodeSpec,
@@ -123,15 +125,57 @@ export class RosuiNode extends ClassicPreset.Node {
     // M4 A: 运行时绑定在 IR 中以 mode:'runtime' 暴露，node/param 记录 ROS 目标，
     // 控件本地值另存 value；无运行期绑定时保持 M1-M3 的静态结构不变。
     const runtime = runtimeBindingFor(this.spec.type, this.spec.inputKey, this.id);
+    // M5: 加载后保留绑定元数据和约束（原 node/param/mode/valueType/运行时引用），只刷新当前值。
+    const restored = this.restoredBinding;
+    if (restored) {
+      return {
+        ...restored,
+        value: this.currentValue as ParamBinding['value'],
+        constraints: restored.constraints ?? this.control.constraints,
+      };
+    }
     return {
       node: runtime ? `${runtime.ref.node}:${runtime.ref.param}` : this.id,
-      param: runtime ? this.spec.inputKey : this.spec.inputKey,
+      param: this.spec.inputKey,
       valueType: runtime ? irValueType(runtime.valueType) : this.spec.valueType,
       mode: runtime ? 'runtime' : 'static',
       widget: this.spec.widget,
       value: this.currentValue as ParamBinding['value'],
       constraints: this.control.constraints,
     };
+  }
+
+  /**
+   * M5：从 GraphIR 恢复控件值。仅写控件与节点本地 IR 值，不通知绑定层，
+   * 因此加载时（通常未连接 ROS）不会产生 setParam 下发。
+   */
+  applyParamBinding(binding: ParamBinding): void {
+    this.restoredBinding = binding;
+    if (!('value' in binding) || binding.value === undefined) return;
+    const value = binding.value;
+    const control = this.control;
+    if (binding.valueType === 'double' && typeof value === 'number' && control.kind === 'number') {
+      control.setValue(value);
+    } else if (binding.valueType === 'integer' && typeof value === 'number' && control.kind === 'number') {
+      control.setValue(value);
+    } else if (binding.valueType === 'boolean' && typeof value === 'boolean' && control.kind === 'boolean') {
+      control.setValue(value);
+    } else if (binding.valueType === 'string' && typeof value === 'string' && control.kind === 'text') {
+      control.setValue(value);
+    } else if (binding.valueType === 'string' && typeof value === 'string' && control.kind === 'select') {
+      control.setValue(value);
+    } else if (
+      binding.valueType === 'double_array' &&
+      Array.isArray(value) &&
+      value.length === 7 &&
+      value.every((v): v is number => typeof v === 'number' && Number.isFinite(v)) &&
+      control.kind === 'pose'
+    ) {
+      control.setValue(value);
+    } else {
+      return;
+    }
+    this.currentValue = control.value ?? value;
   }
 }
 
@@ -175,6 +219,7 @@ export class ScriptNode extends ClassicPreset.Node {
     initial: 1,
   };
   readonly control: NumberControl;
+  restoredBinding?: ParamBinding;
   code = 'return x * 2;';
   result: number | string | null = null;
   error: string | null = null;
@@ -212,6 +257,7 @@ export class ScriptNode extends ClassicPreset.Node {
   }
 
   toParamBinding(): ParamBinding {
+    if (this.restoredBinding) return { ...this.restoredBinding, value: this.code };
     return {
       node: this.id,
       param: 'code',
@@ -220,6 +266,14 @@ export class ScriptNode extends ClassicPreset.Node {
       widget: 'text',
       value: this.code,
     };
+  }
+
+  /** M5：恢复保存的脚本代码；React 编辑器通过监听 data.code 更新 textarea。 */
+  applyParamBinding(binding: ParamBinding): void {
+    this.restoredBinding = binding;
+    if (binding.param === 'code' && typeof binding.value === 'string') {
+      this.code = binding.value;
+    }
   }
 }
 

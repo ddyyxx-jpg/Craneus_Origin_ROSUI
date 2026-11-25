@@ -61,6 +61,12 @@ interface Entry {
   writeSeq: number;
 }
 
+/** 绑定表按「节点类型:端口」查找；运行期 entry 再按节点实例区分，避免同类型多节点互相顶掉。 */
+function entryKey(nodeType: string, portKey: string, instanceId?: string): string {
+  const base = `${nodeType}:${portKey}`;
+  return instanceId ? `${base}@${instanceId}` : base;
+}
+
 /**
  * 不依赖 React 的绑定控制器：管理连接、初值拉取、事件订阅、回声抑制、回滚与清理。
  * 所有外部能力（client / 时钟 / timer / 回调）均通过构造函数注入，可独立单测。
@@ -93,9 +99,15 @@ export class ParamBindingController {
     this.applyStatus(this.currentStatus);
   }
 
-  /** 注册画布控件；未绑定的控件保持可编辑且不受连接状态影响。 */
-  register(nodeType: string, portKey: string, control: BoundControl): () => void {
-    const key = `${nodeType}:${portKey}`;
+  /** 注册画布控件；未绑定的控件保持可编辑且不受连接状态影响。
+   *  instanceId（节点 id）让同类型多个节点各自独立订阅，互不顶掉。 */
+  register(
+    nodeType: string,
+    portKey: string,
+    control: BoundControl,
+    instanceId?: string,
+  ): () => void {
+    const key = entryKey(nodeType, portKey, instanceId);
     const definition = bindingFor(nodeType, portKey);
     if (!definition) {
       control.setReadonly(false);
@@ -130,8 +142,13 @@ export class ParamBindingController {
   }
 
   /** 控件用户改值：合法值回灌 ROS；未连接时忽略。 */
-  onControlChange(nodeType: string, portKey: string, value: ParamValue): void {
-    const entry = this.entries.get(`${nodeType}:${portKey}`);
+  onControlChange(
+    nodeType: string,
+    portKey: string,
+    value: ParamValue,
+    instanceId?: string,
+  ): void {
+    const entry = this.entries.get(entryKey(nodeType, portKey, instanceId));
     if (!entry || !entry.active || this.currentStatus !== 'connected') return;
     if (!matchesBindingType(value, entry.definition.valueType)) {
       entry.control.setValue(entry.lastKnownGood, 'rollback');
@@ -294,8 +311,18 @@ export interface UseParamBindingResult {
   toast: string;
   connect(url: string): Promise<void>;
   disconnect(): void;
-  register(nodeType: string, portKey: string, control: BoundControl): () => void;
-  onControlChange(nodeType: string, portKey: string, value: ParamValue): void;
+  register(
+    nodeType: string,
+    portKey: string,
+    control: BoundControl,
+    instanceId?: string,
+  ): () => void;
+  onControlChange(
+    nodeType: string,
+    portKey: string,
+    value: ParamValue,
+    instanceId?: string,
+  ): void;
 }
 
 export function useParamBinding(client?: RosClient): UseParamBindingResult {
@@ -356,13 +383,13 @@ export function useParamBinding(client?: RosClient): UseParamBindingResult {
 
   const disconnect = useCallback(() => controllerRef.current?.disconnect(), []);
   const register = useCallback(
-    (nodeType: string, portKey: string, control: BoundControl) =>
-      controllerRef.current?.register(nodeType, portKey, control) ?? (() => undefined),
+    (nodeType: string, portKey: string, control: BoundControl, instanceId?: string) =>
+      controllerRef.current?.register(nodeType, portKey, control, instanceId) ?? (() => undefined),
     [],
   );
   const onControlChange = useCallback(
-    (nodeType: string, portKey: string, value: ParamValue) =>
-      controllerRef.current?.onControlChange(nodeType, portKey, value),
+    (nodeType: string, portKey: string, value: ParamValue, instanceId?: string) =>
+      controllerRef.current?.onControlChange(nodeType, portKey, value, instanceId),
     [],
   );
 

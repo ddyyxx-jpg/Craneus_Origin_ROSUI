@@ -58,11 +58,27 @@ export interface BooleanControlModel extends ControlBase {
   commitText(text: string): boolean;
 }
 
+export const POSE_LABELS = ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'] as const;
+
+export interface PoseControlModel extends ControlBase {
+  readonly kind: 'pose';
+  value: readonly number[];
+  /** 各字段的待提交/错误文本；与 value 同步，单字段非法时保留原文用于红框提示。 */
+  readonly fieldTexts: readonly string[];
+  readonly errors: readonly (string | null)[];
+  text: string;
+  valid: boolean;
+  onChange?: ControlValueChange;
+  setValue(values: readonly number[]): void;
+  commitField(index: number, text: string): boolean;
+}
+
 export type RosuiControl =
   | NumberControlModel
   | TextControlModel
   | SelectControlModel
-  | BooleanControlModel;
+  | BooleanControlModel
+  | PoseControlModel;
 
 export interface NumberOptions {
   initial?: number;
@@ -87,6 +103,12 @@ export interface SelectOptions {
 
 export interface BooleanOptions {
   initial?: boolean;
+  change?: ControlValueChange;
+}
+
+export interface PoseOptions {
+  initial?: readonly number[];
+  labels?: readonly string[];
   change?: ControlValueChange;
 }
 
@@ -256,6 +278,70 @@ export class BooleanControl extends ClassicPreset.Control implements BooleanCont
   }
 }
 
+/**
+ * Pose 复杂控件：7 个独立字段，整体作为一个 double_array(7) 参数。
+ * 继承 ClassicPreset.Control（不是单值 InputControl），每个字段通过 commitField 独立校验。
+ */
+export class PoseControl extends ClassicPreset.Control implements PoseControlModel {
+  readonly kind = 'pose' as const;
+  readonly constraints: ParamConstraints = {};
+  readonly initial: readonly number[];
+  readonly labels: readonly string[];
+  value: readonly number[];
+  fieldTexts: readonly string[];
+  errors: readonly (string | null)[];
+  text: string;
+  valid = true;
+  onChange?: ControlValueChange;
+
+  constructor(options: PoseOptions = {}) {
+    super();
+    const initial = options.initial ?? [0, 0, 0, 0, 0, 0, 1];
+    this.initial = [...initial];
+    this.labels = options.labels ?? [...POSE_LABELS];
+    this.value = [...initial];
+    this.fieldTexts = initial.map((v) => String(v));
+    this.errors = this.fieldTexts.map(() => null);
+    this.text = JSON.stringify(this.value);
+    this.onChange = options.change;
+  }
+
+  setValue(values: readonly number[]): void {
+    const next = [...values];
+    const changed = next.length !== this.value.length || next.some((v, i) => !Object.is(v, this.value[i]));
+    this.value = next;
+    this.fieldTexts = next.map((v) => String(v));
+    this.errors = next.map(() => null);
+    this.text = JSON.stringify(next);
+    // 七个有限数才算合法；程序写入也走这里，避免把脏值当成可回灌状态。
+    this.valid = next.length === 7 && next.every((v) => Number.isFinite(v));
+    if (changed) this.onChange?.({ value: next, text: this.text, valid: this.valid });
+  }
+
+  commitField(index: number, text: string): boolean {
+    if (index < 0 || index >= this.value.length) return false;
+    const result = validateNumber(text, {});
+    const nextTexts = [...this.fieldTexts];
+    const nextErrors = [...this.errors];
+    nextTexts[index] = text;
+    nextErrors[index] = result.valid ? null : result.error;
+    this.fieldTexts = nextTexts;
+    this.errors = nextErrors;
+    this.valid = nextErrors.every((error) => error === null) && this.value.length === 7;
+    if (result.valid) {
+      const next = [...this.value];
+      next[index] = result.value;
+      this.setValue(next);
+      // setValue 会统一刷新 fieldTexts/errors；只保留其余字段的真实报错状态。
+      this.errors = nextErrors.map((error, i) => (i === index ? null : error));
+      this.fieldTexts = nextTexts;
+      // 其它字段还有错时，整组仍属非法：别让 setValue 的 valid=true 掩盖掉。
+      this.valid = this.errors.every((error) => error === null) && this.value.length === 7;
+    }
+    return result.valid;
+  }
+}
+
 export function validateNumber(
   raw: string,
   constraints: ParamConstraints,
@@ -307,6 +393,8 @@ export function valueTypeForControl(kind: ParamWidget): ParamValueType {
   switch (kind) {
     case 'number':
       return 'double';
+    case 'pose':
+      return 'double_array';
     case 'text':
       return 'string';
     case 'boolean':

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RosClientImpl } from './RosClient';
-import { parseParamEvent, parseRosapiValue } from './protocol';
+import { encodeParamValue, parseParamEvent, parseRosapiValue } from './protocol';
 import type { RosbridgeMessage, RosTransport, RosTransportFactory } from './types';
 
 class FakeTransport implements RosTransport {
@@ -150,6 +150,12 @@ describe('RosClientImpl', () => {
     });
     expect(await bad).toEqual({ successful: false, reason: 'gain 必须在 [0.0, 10.0]' });
     client.close();
+  });
+
+  it('encodeParamValue 数值数组整数项补 .0（double_array 语义）', () => {
+    expect(encodeParamValue([1, 2, 3, 0, 0, 0, 1])).toBe('[1.0,2.0,3.0,0.0,0.0,0.0,1.0]');
+    expect(encodeParamValue([4.5, 2])).toBe('[4.5,2.0]');
+    expect(encodeParamValue(['a', 'b'])).toBe('["a","b"]');
   });
 
   it('parameter_events 的 new_parameters / changed_parameters 都推送给按 ref 过滤的订阅', async () => {

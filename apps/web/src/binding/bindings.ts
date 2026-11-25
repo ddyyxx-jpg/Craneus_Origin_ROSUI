@@ -16,6 +16,7 @@ const BINDINGS: ReadonlyMap<string, ParamBindingDefinition> = new Map([
   [`Gain:gain`, { ref: { node: DEMO_NODE, param: 'gain' }, valueType: 'double' }],
   [`Switch:enabled`, { ref: { node: DEMO_NODE, param: 'enabled' }, valueType: 'bool' }],
   [`Mode:mode`, { ref: { node: DEMO_NODE, param: 'mode' }, valueType: 'string' }],
+  [`Pose:pose`, { ref: { node: DEMO_NODE, param: 'pose' }, valueType: 'double_array' }],
   // Threshold.value 故意不绑定：用来演示「未绑定」状态。
 ]);
 

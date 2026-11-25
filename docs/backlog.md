@@ -150,10 +150,25 @@
 
 ---
 
-## 后续（M3/M4，先不细化）
+## M3 复杂控件（Pose + double_array 双向绑定）
 
-- **M3 复杂控件与性能**：Pose 表单、JSON 编辑器（`customize.node` + `RefSocket`/`RefControl` + `area.resize`）、LOD（低缩放占位矩形）、200 节点压测（输入 16ms 内不卡顿）。
-- **M4 打磨与验收**：撤销/重做、复制粘贴、保存/加载 `.rosui.json`、错误 toast 统一、AC-1..5 逐条验收。
+### T-021 Pose 控件 ✅ 已完成
+- owner: D ｜ scope: `apps/web/src/controls/model.ts`、`apps/web/src/controls/react.tsx`、`apps/web/src/styles.css`
+- 验收：7 字段 DOM 表单（x/y/z/qx/qy/qz/qw），逐字段 blur/Enter 校验（有限数字），`data-testid="pose-field"` + `aria-label`，错误边框/文案复用现有样式；不冒泡画布拖拽/键盘事件。
+
+### T-022 数组参数双向绑定 ✅ 已完成
+- owner: D ｜ scope: `apps/web/src/rete/nodes.ts`、`apps/web/src/binding/bindings.ts`、`apps/web/src/binding/controlAdapter.ts`、`apps/web/src/ros/protocol.ts`、`apps/web/src/App.tsx`、`packages/ir/src/index.ts`
+- 验收：`Pose:pose → /rosui_demo:pose (double_array)`；UI 写值与 `ros2 param set` 外部事件双向同步；数组值不再被 `guardedChange` 过滤；`encodeParamValue` 数值数组整数项补 `.0` 保持 double_array 语义（rclpy YAML 推断）。
+
+### T-023 M3 e2e ✅ 已完成
+- owner: D ｜ scope: `e2e/m3-pose.spec.ts`
+- 验收：真 ROS 栈下 `+ Pose` 出现 7 字段且等于当前 pose；改 x=4.5 → `ros2 param get` 精确匹配；外部 set → UI 2s 内同步。3 条 serial，90s 超时。
+
+---
+
+## 后续（M4，先不细化）
+
+- **M4 打磨与验收**：JSON 编辑器、LOD、200 节点压测、撤销/重做、复制粘贴、保存/加载 `.rosui.json`、错误 toast 统一、AC-1..5 逐条验收。
 
 ## 依赖图（ASCII）
 

@@ -3,6 +3,7 @@ import type { ParamBinding, ParamValueType, ParamWidget } from '@rosui/ir';
 import {
   BooleanControl,
   NumberControl,
+  PoseControl,
   SelectControl,
   TextControl,
   valueTypeForControl,
@@ -64,6 +65,12 @@ export function buildControl(
         ...common,
         initial: typeof definition.initial === 'boolean' ? definition.initial : false,
       });
+    case 'pose': {
+      const initial = Array.isArray(definition.initial)
+        ? definition.initial.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+        : [];
+      return new PoseControl({ ...common, initial });
+    }
     default:
       throw new Error(`Unsupported widget: ${String(definition.widget)}`);
   }
@@ -164,6 +171,15 @@ export const NODE_REGISTRY = {
     widget: 'boolean',
     valueType: 'boolean',
     initial: false,
+  },
+  pose: {
+    type: 'Pose',
+    label: 'Pose',
+    inputKey: 'pose',
+    inputLabel: 'pose',
+    widget: 'pose',
+    valueType: 'double_array',
+    initial: [0, 0, 0, 0, 0, 0, 1],
   },
 } as const satisfies Record<string, NodeSpec>;
 

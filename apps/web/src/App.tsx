@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GraphIR } from '@rosui/ir';
 import { CurrentIR } from './controls';
 import { createEditor, addNode, connect, toGraphIR, type EditorHandle } from './rete/editor';
-import type { RosuiNode } from './rete/nodes';
+import { createNode, type RosuiNode } from './rete/nodes';
 import type { ParamValue, RosStatus } from './ros';
 import { createControlAdapter } from './binding/controlAdapter';
 import { useParamBinding } from './binding/useParamBinding';
@@ -35,6 +35,8 @@ export function App() {
   const [url, setUrl] = useState('ws://127.0.0.1:9090');
 
   const binding = useParamBinding();
+  // M3：动态添加的节点也要接进绑定层；unregister 在画布卸载时统一清理。
+  const poseUnregisters = useRef<Array<() => void>>([]);
 
   const refresh = useCallback(() => {
     setGraph(snapshot(handleRef.current));
@@ -51,8 +53,8 @@ export function App() {
   // 只依赖稳定的 onControlChange：依赖整个 binding 对象会让 status/toast 一变就重建画布。
   const { onControlChange } = binding;
   const handleUserChange = useCallback(
-    (nodeType: string, portKey: string, value: ParamValue) => {
-      onControlChange(nodeType, portKey, value);
+    (nodeType: string, portKey: string, value: ParamValue, nodeId?: string) => {
+      onControlChange(nodeType, portKey, value, nodeId);
     },
     [onControlChange],
   );
@@ -94,17 +96,25 @@ export function App() {
           const adapter = createControlAdapter({
             nodeType: item.nodeType,
             portKey: item.portKey,
+            nodeId: node.id,
             control: node.control,
             onUserChange: handleUserChange,
           });
-          unregisters.push(binding.register(item.nodeType, item.portKey, {
-            ...adapter,
-            setValue(value, origin) {
-              adapter.setValue(value, origin);
-              if (typeof value === 'number') setLastGain(value);
-              refresh();
-            },
-          }));
+          unregisters.push(
+            binding.register(
+              item.nodeType,
+              item.portKey,
+              {
+                ...adapter,
+                setValue(value, origin) {
+                  adapter.setValue(value, origin);
+                  if (typeof value === 'number') setLastGain(value);
+                  refresh();
+                },
+              },
+              node.id,
+            ),
+          );
         }
 
         setReady(true);
@@ -119,6 +129,8 @@ export function App() {
       disposed = true;
       for (const unregister of unregisters) unregister();
       unregisters.length = 0;
+      for (const unregister of poseUnregisters.current) unregister();
+      poseUnregisters.current.length = 0;
       handle?.destroy();
       handleRef.current = null;
     };
@@ -178,6 +190,45 @@ export function App() {
           }}
         >
           + Gain
+        </button>
+        <button
+          type="button"
+          data-testid="add-pose"
+          disabled={!ready}
+          onClick={() => {
+            const editorHandle = handleRef.current;
+            if (!editorHandle) return;
+            // M3：Pose 不在默认 5 节点里，点按钮加到画布空白处并注册绑定。
+            const node = createNode('pose', onValue);
+            const count = editorHandle.editor.getNodes().length;
+            void editorHandle.editor.addNode(node).then(() =>
+              editorHandle.area.translate(node.id, { x: 300 + count * 30, y: 520 + count * 20 }),
+            );
+            const adapter = createControlAdapter({
+              nodeType: node.spec.type,
+              portKey: node.spec.inputKey,
+              nodeId: node.id,
+              control: node.control,
+              onUserChange: handleUserChange,
+            });
+            poseUnregisters.current.push(
+              binding.register(
+                'Pose',
+                'pose',
+                {
+                  ...adapter,
+                  setValue(value, origin) {
+                    adapter.setValue(value, origin);
+                    refresh();
+                  },
+                },
+                node.id,
+              ),
+            );
+            refresh();
+          }}
+        >
+          + Pose
         </button>
       </header>
       {binding.toast ? (

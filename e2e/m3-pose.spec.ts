@@ -50,6 +50,8 @@ test('点 add-pose 出现 7 个字段，初值等于 ROS 当前 pose', async ({ 
 test('改 x 字段为 4.5 → ROS 参数变成 4.5', async ({ page }) => {
   ros2('ros2 param set /rosui_demo pose "[1.0,2.0,3.0,0.0,0.0,0.0,1.0]"');
   await connectAndAddPose(page);
+  // 初值 pull 是异步的：先等 y 字段显示 ROS 的 2.0，避免拿默认 0 提交整组 pose。
+  await expect(page.getByTestId('pose-field').nth(1)).toHaveValue('2', { timeout: 15_000 });
   const x = page.getByTestId('pose-field').nth(0);
   await x.fill('4.5');
   await x.blur();

@@ -263,15 +263,12 @@ export function PoseControlComponent({ data }: { data: PoseControl }) {
   const binding = useBindingState(data);
   const [texts, setTexts] = useState<readonly string[]>(data.fieldTexts);
   const [errors, setErrors] = useState<readonly (string | null)[]>(data.errors);
-  // 控件引用稳定，Rete 更新时 prop 引用不变；绑定层 setValue 会 bumpVersion。
-  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     // 程序写值（ROS 初值/外部事件）时同步；用户编辑时 data.text/value 变化也会触发，
     // 但此时 fieldTexts 已由 commitField 更新为同一份值，不会覆盖用户输入。
     setTexts(data.fieldTexts);
     setErrors(data.errors);
-    setVersion((v) => v + 1);
   }, [data.text, binding.version]);
 
   // 只展示第一条错误（testid 与 number/text 一致）。
@@ -289,13 +286,13 @@ export function PoseControlComponent({ data }: { data: PoseControl }) {
           <label key={label} className="pose-field">
             <span className="pose-field-label">{label}</span>
             <input
-              type="number"
-              step="any"
+              type="text"
+              inputMode="decimal"
               className={errors[index] ? 'invalid' : undefined}
               data-testid="pose-field"
               aria-label={`pose-${label}`}
               value={texts[index] ?? ''}
-              key={`${index}:${version}:${binding.version}`}
+              key={label}
               readOnly={binding.readonly}
               onChange={(event) => {
                 if (binding.readonly) return;
@@ -309,7 +306,6 @@ export function PoseControlComponent({ data }: { data: PoseControl }) {
                 data.commitField(index, text);
                 setErrors([...data.errors]);
                 setTexts([...data.fieldTexts]);
-                setVersion((v) => v + 1);
               }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') event.currentTarget.blur();

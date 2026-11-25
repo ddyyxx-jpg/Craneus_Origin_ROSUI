@@ -91,7 +91,12 @@ export const paramBindingSchema = z
     mode: paramModeSchema,
     widget: paramWidgetSchema,
     value: z
-      .union([z.number().finite(), z.string(), z.boolean(), z.array(z.union([z.number(), z.string()]))])
+      .union([
+        z.number().finite(),
+        z.string(),
+        z.boolean(),
+        z.array(z.union([z.number().finite(), z.string()])),
+      ])
       .optional(),
     constraints: paramConstraintsSchema.optional(),
   })

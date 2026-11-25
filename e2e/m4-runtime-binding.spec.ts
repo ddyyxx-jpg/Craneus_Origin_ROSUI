@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ros2, startDemoStack } from './demo-stack';
+import { openParamBrowser } from './ui';
 
 // M4 A: runtime parameter browser + generic binding (real ROS, no mocks).
 test.describe.configure({ mode: 'serial' });
@@ -24,6 +25,7 @@ async function connect(page: Page): Promise<void> {
   await expect(page.getByTestId('ros-status')).toHaveAttribute('data-status', 'connected', {
     timeout: 20_000,
   });
+  await openParamBrowser(page);
   await expect(page.getByTestId('param-browser')).toBeVisible();
 }
 
@@ -38,7 +40,8 @@ async function selectNode(page: Page, nodeType: string): Promise<void> {
 test('param browser lists demo params and filter works', async ({ page }) => {
   await connect(page);
   const browser = page.getByTestId('param-browser');
-  await expect(browser.getByText('/rosui_demo')).toBeVisible();
+  // rosapi 在冷启动/参数多时要几秒才回全量列表，给足等待。
+  await expect(browser.getByText('/rosui_demo')).toBeVisible({ timeout: 20_000 });
   await expect(browser.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]')).toBeVisible();
   await page.getByTestId('param-filter').fill('gain');
   await expect(browser.locator('[data-testid="bind-param"]')).toHaveCount(1);
@@ -49,7 +52,9 @@ test('runtime bind gain param to Threshold number port: value flows and writes b
   ros2('ros2 param set /rosui_demo gain 0.75');
   await connect(page);
   await selectNode(page, 'Threshold');
-  await page.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]').click();
+  const bindGain = page.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]');
+  await expect(bindGain).toBeEnabled({ timeout: 15_000 });
+  await bindGain.click();
   await expect(page.getByTestId('current-ir')).toContainText('"mode": "runtime"');
   await expect(page.getByTestId('current-ir')).toContainText('/rosui_demo:gain');
 
@@ -74,7 +79,9 @@ test('runtime bind gain param to Threshold number port: value flows and writes b
 test('unbind stops ROS write-back', async ({ page }) => {
   await connect(page);
   await selectNode(page, 'Threshold');
-  await page.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]').click();
+  const bindGain = page.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]');
+  await expect(bindGain).toBeEnabled({ timeout: 15_000 });
+  await bindGain.click();
   await page.evaluate(async () => {
     const handle = (window as unknown as { __rosui?: { editor: { getConnections: () => { id: string }[]; removeConnection: (id: string) => Promise<void> } } }).__rosui;
     if (!handle) throw new Error('window.__rosui 未挂载');
@@ -94,7 +101,35 @@ test('unbind stops ROS write-back', async ({ page }) => {
 test('type mismatch is rejected: string param to number control', async ({ page }) => {
   await connect(page);
   await selectNode(page, 'Threshold');
-  await page.locator('[data-testid="bind-param"][data-param="/rosui_demo:mode"]').click();
+  const bindMode = page.locator('[data-testid="bind-param"][data-param="/rosui_demo:mode"]');
+  await expect(bindMode).toBeEnabled({ timeout: 15_000 });
+  await bindMode.click();
   await expect(page.getByTestId('ros-toast')).toContainText('不接受 string');
   await expect(page.getByTestId('current-ir')).not.toContainText('/rosui_demo:mode');
+});
+
+test('动态新增的 Gain 节点也能真正绑定（不是假成功）', async ({ page }) => {
+  ros2('ros2 param set /rosui_demo gain 1.0');
+  await connect(page);
+  const before = ros2('ros2 param get /rosui_demo gain');
+  await page.getByTestId('add-gain').click();
+  const gains = page.locator('[data-testid="node"]').filter({ has: page.locator('.title:text-is("Gain")') });
+  await expect(gains).toHaveCount(2, { timeout: 10_000 });
+  await gains.last().locator('.title').click();
+  await expect(page.getByTestId('selected-port')).toContainText('Gain');
+
+  const bindGain = page.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]');
+  await expect(bindGain).toBeEnabled({ timeout: 15_000 });
+  await bindGain.click();
+  await expect(page.getByTestId('ros-toast')).toHaveCount(0);
+  await expect(page.getByTestId('current-ir')).toContainText('"mode": "runtime"');
+
+  const control = gains.last().locator('[data-testid="number-control"]');
+  // Gain 的 step=0.1，2.75 不是 0.1 的整数倍，会被控件校验拦下（这也是有效断言，但会测错东西）。
+  await control.fill('2.7');
+  await control.blur();
+  await expect
+    .poll(() => ros2('ros2 param get /rosui_demo gain'), { timeout: 15_000 })
+    .toMatch(/value is: 2\.7$/);
+  expect(before).toMatch(/value is: 1\.0$/);
 });

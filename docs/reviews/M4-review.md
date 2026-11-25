@@ -82,3 +82,37 @@ Script:    return x*3+1, x=1 → out: 4.0；x=10 → out: 31.0；while(true){} �
 动态绑定:  + Gain → 绑 /rosui_demo:gain → 本地改 5.5 → ros2 param get 仍 1.0（UI→ROS 无效）
 重叠:      连点两次 + Gain → 第二个节点被第一个遮挡（subtree intercepts pointer events）
 ```
+
+## 第二轮闭环（2026-11-25，`feat/m4-runtime-binding` 工作区）
+
+针对上一轮 verdict 的剩余项与用户 m01544「修」：
+
+| 项 | 状态 | 落地 |
+| --- | --- | --- |
+| 参数浏览器只列首次 `getParamNames` | ✅ | `ParamBrowser.tsx` 新增 `addDiscovered()`：未知 `<node>:<param>` 事件先入 refs + eventValues，再 `getParam` 补类型后追加行；新增 `e2e/m4-param-browser.spec.ts`（晚声明参数节点 + 事件值刷新） |
+| 每次执行新建 Worker | ✅ | `scriptRunner.ts` 改单例：`WeakMap<factory, Worker>` + `pendingById` + `runId`；超时只 terminate 该轮并重建；`scriptRunner.test.ts` 6 例（含「工厂只调 1 次」） |
+| 动态节点未注册绑定层 → 绑定假成功 | ✅ | `App.tsx` `registerDynamic()` + `dynamicUnregisters`；`bind()` 返回 boolean，未注册时 toast 并回滚 IR（新增 e2e 断「+ Gain 后绑定真写进 ROS」） |
+| Inspector 滚轮被画布抢走 | ✅ | `.inspector-panel` `onWheel`/`onPointerDown` stopPropagation |
+| 参数浏览器初值拉取打爆 rosapi | ✅ | 默认收起（`param-toggle`）+ 展开才加载 + 4 并发池 + unknown 行退避重试 3 次 |
+| 首帧窗口吞掉真实外部改值 | ✅ | warmup 内事件改为补拉权威 `getParam`（`warmupRefresh`），不再丢弃 |
+| 订阅建立前的外部改值丢失 | ✅ | 订阅后 300ms `refreshOnce()` 补拉一次 |
+| `/parameter_events` 丢事件后永久不同步 | ✅ | `RECONCILE_INTERVAL_MS=5000` 周期对账（connected 时启、断线/销毁停） |
+| Pose 字段 `type="number"` 命中 spinner / `key` 含 version 破坏 Tab | ✅ | 改 `type="text" inputMode="decimal"`、`key={label}`、删除仅供重挂的 `version` state |
+| `buildControl('pose')` 无 7 元兜底 | ✅ | 短补 0（末位 w 补 1）、超长截断 |
+| IR 数组项未 `.finite()` | ✅ | `packages/ir/src/index.ts` 数组分支改 `z.number().finite()` |
+| `controlAdapter` 数组 `text: JSON.stringify` | ⏳ 未修 | 语义漂移仍在（数组控件的 IR `text` 是 JSON 串），留待 M5 统一 `text` 语义 |
+| M3 e2e 验收缺口（红框/不写 ROS 断言） | ⏳ 未修 | `e2e/m3-pose.spec.ts` 未补断言 |
+
+### 门禁（第二次）
+
+```bash
+corepack pnpm build      # 0
+corepack pnpm check      # 0（tsc ×2 + IR 5 例）
+corepack pnpm -w exec vitest --run apps/web/src packages/ir   # 38 passed（5 + 5 文件）
+node node_modules/@playwright/test/cli.js test                # 31 passed，连续 3 轮（1.2–1.3m/轮）
+```
+
+### 复现与根因备注
+
+- dynamic-gain 用例填 `2.75` 永远写不进去：Gain 的 `constraints.step=0.1` 要求 0.1 整数倍，`validateNumber` 正确拒绝；测试值改为 `2.7`。**不是产品 bug**。
+- 全量 e2e 的「外部改 6.25 → UI 停在 4」只在全量时序下出现：参数浏览器未收起时并发 35 次 `getParam` 挤占 rosapi + `parameter_events` 丢事件；收起 + 对账后消失。

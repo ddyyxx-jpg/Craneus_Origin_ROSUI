@@ -21,7 +21,12 @@ export function ros2(args: string): string {
   if (result.status !== 0) {
     throw new Error(`ros2 命令失败: ${args}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
   }
-  return `${result.stdout}`.trim();
+  // 过滤 RTPS 的 SHM/participant 噪声行（带时间戳，逐字比对会假失败）。
+  return `${result.stdout}`
+    .split('\n')
+    .filter((line) => !/RTPS_|Permission denied/.test(line))
+    .join('\n')
+    .trim();
 }
 
 function portOpen(): Promise<boolean> {
@@ -62,6 +67,14 @@ export async function startDemoStack(): Promise<() => void> {
     return () => undefined; // 外部已经起好了，不归我们清理
   }
 
+  /** 每次栈就绪后把 demo 参数复位，避免上一个 spec / 上一次运行留下的值污染断言。 */
+  const resetDemoParams = (): void => {
+    ros2('ros2 param set /rosui_demo gain 1.0');
+    ros2('ros2 param set /rosui_demo mode normal');
+    ros2('ros2 param set /rosui_demo enabled true');
+    ros2('ros2 param set /rosui_demo pose "[2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0]"');
+  };
+
   const hasNode = () => {
     try {
       return ros2('ros2 param list /rosui_demo').includes('gain');
@@ -79,6 +92,7 @@ export async function startDemoStack(): Promise<() => void> {
     stack.unref();
   }
   await waitFor(hasNode, 60_000);
+  resetDemoParams();
 
   return () => {
     if (!stack?.pid) return;
@@ -88,5 +102,32 @@ export async function startDemoStack(): Promise<() => void> {
       /* 已退出 */
     }
     stack = null;
+  };
+}
+
+/** 起一个 3 秒后才声明参数的节点，用来验证参数浏览器能发现运行期新增参数。 */
+export function startLateParamNode(): { nodeName: string; stop: () => void } {
+  const nodeName = `rosui_late_${String(Date.now() % 100000)}`;
+  // 必须 source ROS 环境，裸 python3 找不到 rclpy（会静默退出，测试只会看到「节点没出现」）。
+  const proc = spawn(
+    'bash',
+    ['-lc', 'set +u; source /opt/ros/jazzy/setup.bash; exec python3 scripts/late_param_node.py'],
+    {
+      cwd: ROOT,
+      env: { ...ROS_ENV, ROSUI_LATE_NODE: nodeName },
+      detached: true,
+      stdio: 'ignore',
+    },
+  );
+  proc.unref();
+  return {
+    nodeName,
+    stop: () => {
+      try {
+        process.kill(-proc.pid!, 'SIGTERM');
+      } catch {
+        // 已经退出了
+      }
+    },
   };
 }

@@ -68,10 +68,12 @@ export function buildControl(
         initial: typeof definition.initial === 'boolean' ? definition.initial : false,
       });
     case 'pose': {
-      const initial = Array.isArray(definition.initial)
+      // pose 固定 7 元：短数组补 0（末位四元数 w 补 1），超长截断，保证表单与编码都拿到完整位姿。
+      const initial: number[] = Array.isArray(definition.initial)
         ? definition.initial.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
         : [];
-      return new PoseControl({ ...common, initial });
+      while (initial.length < 7) initial.push(initial.length === 6 ? 1 : 0);
+      return new PoseControl({ ...common, initial: initial.slice(0, 7) });
     }
     default:
       throw new Error(`Unsupported widget: ${String(definition.widget)}`);

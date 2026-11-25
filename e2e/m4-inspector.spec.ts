@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ros2, startDemoStack } from './demo-stack';
+import { openParamBrowser } from './ui';
 
 // M4 B: Inspector node shows all runtime bindings with live ROS values.
 test.describe.configure({ mode: 'serial' });
@@ -29,6 +30,7 @@ test('Inspector panel lists bound ports and follows ROS value changes', async ({
   // Gain is statically bound in M2; Inspector lists runtime bindings, so bind one via UI first.
   const gainNode = page.locator('[data-testid="node"]').filter({ has: page.locator('.title:text-is("Gain")') }).first();
   await gainNode.locator('.title').click();
+  await openParamBrowser(page);
   await page.locator('[data-testid="bind-param"][data-param="/rosui_demo:gain"]').click();
   await expect(panel.getByTestId('inspector-row')).toContainText('Gain.gain');
   await expect(panel.getByTestId('inspector-row')).toContainText('/rosui_demo:gain');

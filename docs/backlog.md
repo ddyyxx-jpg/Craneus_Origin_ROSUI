@@ -166,9 +166,35 @@
 
 ---
 
-## 后续（M4，先不细化）
+## M4 运行时绑定 / Inspector / Script（PR #2）
 
-- **M4 打磨与验收**：JSON 编辑器、LOD、200 节点压测、撤销/重做、复制粘贴、保存/加载 `.rosui.json`、错误 toast 统一、AC-1..5 逐条验收。
+### T-024 参数浏览器（运行期发现 + 绑定）✅ 已完成
+- owner: D ｜ scope: `apps/web/src/ParamBrowser.tsx`、`apps/web/src/binding/bindings.ts`
+- 验收：连上后列出 `<node>:<param>`，可按名字过滤；运行中新 declare 的参数出现在列表里（`/parameter_events` 的 `new_parameters` 驱动）；点「绑定」把选中端口改成 runtime 绑定，类型不兼容时拒绝并 toast。
+
+### T-025 Inspector 节点 ✅ 已完成
+- owner: D ｜ scope: `apps/web/src/rete/nodeRenderers.tsx`、`apps/web/src/styles.css`
+- 验收：列出所有已绑定端口的实时值；面板内滚轮只滚面板（不缩放画布）。
+
+### T-026 Script 节点（Worker 执行）✅ 已完成
+- owner: D ｜ scope: `apps/web/src/rete/scriptRunner.ts`、`apps/web/src/rete/script.worker.ts`、`apps/web/src/rete/nodes.ts`、`apps/web/src/rete/nodeRenderers.tsx`
+- 验收：节点内 textarea 编辑 JS，blur/Ctrl+Enter 执行；`while(true){}` 在 50ms 被 terminate、页面仍可交互；Worker 复用（同一 factory 只创建一个），超时后重建；结果只接受有限数字/字符串。
+
+### T-027 M4 e2e 与门禁 ✅ 已完成
+- owner: Q ｜ scope: `e2e/`
+- 验收：真 ROS 栈下覆盖运行时绑定、动态新增节点、解绑、参数发现、Inspector、Script；全量 `playwright test` 31 passed，连跑两轮稳定；`build`/`check`/`vitest` 全绿。
+
+### T-028 M4 评审闭环 ✅ 已完成
+- owner: R ｜ scope: `docs/reviews/M4-review.md`
+- 验收：首轮 6 项 + 二轮 2 项全部处置，结论与证据写回评审文件；门禁数字更新为 31 e2e。
+
+### T-029 第二轮稳定性与遗留项 ✅ 已完成
+- owner: L/D ｜ scope: `apps/web/src/{binding,controls,rete}/**`、`e2e/**`、`packages/ir/src/index.ts`
+- 验收：参数浏览器改默认收起 + 展开懒加载（4 并发 + 退避重试）；绑定层补 warmup 权威补拉、订阅后 300ms 对账、5s 周期对账；动态节点注册绑定层 + `bind()` 返回 boolean 回滚；Pose 字段改 `text/inputMode` + `key={label}` + 7 元兜底；IR 数组项 `.finite()`；`playwright` 31 passed 连续 3 轮。
+
+## 后续（M5，先不细化）
+
+- **M5 打磨与验收**：IR 反序列化（保存/加载 `.rosui.json`）、LOD 混合渲染与 200 节点压测、撤销/重做、复制粘贴、错误 toast 统一、AC-1..5 逐条验收。
 
 ## 依赖图（ASCII）
 

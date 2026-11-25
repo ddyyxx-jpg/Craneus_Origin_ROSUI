@@ -36,6 +36,7 @@ export function App() {
   const binding = useParamBinding();
   // M3：动态添加的节点也要接进绑定层；unregister 在画布卸载时统一清理。
   const poseUnregisters = useRef<Array<() => void>>([]);
+  const dynamicUnregisters = useRef<Array<() => void>>([]);
 
   const refresh = useCallback(() => {
     setGraph(snapshot(handleRef.current));
@@ -141,6 +142,8 @@ export function App() {
       unregisters.length = 0;
       for (const unregister of poseUnregisters.current) unregister();
       poseUnregisters.current.length = 0;
+      for (const unregister of dynamicUnregisters.current) unregister();
+      dynamicUnregisters.current.length = 0;
       handle?.destroy();
       handleRef.current = null;
     };
@@ -150,6 +153,35 @@ export function App() {
   const connected = binding.status === 'connected';
 
   const { bind, unbind } = binding;
+  /** 动态新增的节点也要注册进绑定层，否则参数浏览器能「绑定成功」但实际没有订阅。 */
+  const registerDynamic = useCallback(
+    (node: RosuiNode): void => {
+      const adapter = createControlAdapter({
+        nodeType: node.spec.type,
+        portKey: node.spec.inputKey,
+        nodeId: node.id,
+        control: node.control,
+        onUserChange: handleUserChange,
+      });
+      dynamicUnregisters.current.push(
+        binding.register(
+          node.spec.type,
+          node.spec.inputKey,
+          {
+            ...adapter,
+            setValue(value, origin) {
+              adapter.setValue(value, origin);
+              if (node.spec.type === 'Gain' && typeof value === 'number') setLastGain(value);
+              refresh();
+            },
+          },
+          node.id,
+        ),
+      );
+    },
+    [binding, handleUserChange, refresh],
+  );
+
   const handleBind = useCallback(
     (ref: ParamBindingRef, valueType: BindingValueType) => {
       if (!selectedPort) return;
@@ -158,8 +190,8 @@ export function App() {
         setLocalToast(`${selectedPort.nodeType}.${selectedPort.portKey} 控件不接受 ${valueType} 类型参数`);
         return;
       }
-      setLocalToast('');
-      bind(selectedPort.nodeType, selectedPort.portKey, ref, valueType, selectedPort.instanceId);
+      const ok = bind(selectedPort.nodeType, selectedPort.portKey, ref, valueType, selectedPort.instanceId);
+      setLocalToast(ok ? '' : `${selectedPort.nodeType}.${selectedPort.portKey} 未注册到绑定层，绑定已回滚`);
       refresh();
     },
     [bind, selectedPort, refresh],
@@ -217,11 +249,13 @@ export function App() {
         </span>
         <button
           type="button"
+          data-testid="add-gain"
           disabled={!ready}
           onClick={() => {
             const editorHandle = handleRef.current;
             if (!editorHandle) return;
-            void addNode(editorHandle, 'gain', 300, 520, onValue).then(() => {
+            void addNode(editorHandle, 'gain', 300, 520, onValue).then((node) => {
+              registerDynamic(node);
               refresh();
             });
           }}
@@ -286,7 +320,10 @@ export function App() {
           onClick={() => {
             const editorHandle = handleRef.current;
             if (!editorHandle) return;
-            void addNode(editorHandle, 'script', 600, 700, onValue).then(() => refresh());
+            void addNode(editorHandle, 'script', 600, 700, onValue).then((node) => {
+              registerDynamic(node);
+              refresh();
+            });
           }}
         >
           + Script

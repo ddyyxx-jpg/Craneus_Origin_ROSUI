@@ -72,7 +72,13 @@ export function InspectorNodeComponent({
   return (
     <div className="node-shell" data-testid="node" data-node-id={data.id} data-node-kind="Inspector" data-selected={selected ? 'true' : undefined}>
       <div className="title" data-testid="title">{data.label}</div>
-      <div className="inspector-panel" data-testid="inspector-panel">
+      <div
+        className="inspector-panel"
+        data-testid="inspector-panel"
+        // 滚轮/指针事件不进画布：否则面板滚不动、画布反被缩放（Rete 监听 area 的 wheel）。
+        onWheel={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
         {bindings.length === 0 ? (
           <div className="inspector-empty">暂无运行时绑定</div>
         ) : (

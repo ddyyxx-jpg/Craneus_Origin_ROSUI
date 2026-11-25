@@ -20,40 +20,67 @@ describe('runScript（无 Worker 时的同步退路）', () => {
   });
 });
 
-/** 假 Worker：只记录 postMessage，可手动触发 onmessage 或让它一直不回（模拟死循环）。 */
-function fakeWorker(): Worker & { posted: unknown[] } {
-  const posted: unknown[] = [];
+/** 假 Worker：记录 postMessage；可手动按 runId 回消息，或一直不回（模拟死循环）。 */
+function fakeWorker(): Worker & { posted: { id: number; code: string }[]; terminated: boolean } {
+  const posted: { id: number; code: string }[] = [];
   const worker = {
     posted,
+    terminated: false,
     onmessage: null as ((event: MessageEvent<unknown>) => void) | null,
     onerror: null as ((event: ErrorEvent) => void) | null,
-    postMessage(data: unknown) {
+    postMessage(data: { id: number; code: string }) {
       posted.push(data);
     },
     terminate() {
-      // noop
+      worker.terminated = true;
     },
   };
-  return worker as unknown as Worker & { posted: unknown[] };
+  return worker as unknown as Worker & { posted: { id: number; code: string }[]; terminated: boolean };
+}
+
+function reply(worker: Worker, id: number, payload: { ok: boolean; value?: unknown; error?: string }): void {
+  (worker.onmessage as ((event: MessageEvent<unknown>) => void) | null)?.(
+    new MessageEvent('message', { data: { id, ...payload } }),
+  );
 }
 
 describe('runScript（Worker 路径）', () => {
   it('worker 回传结果 → ok', async () => {
     const worker = fakeWorker();
-    const pending = runScript('return x + 1;', 1, { createWorker: () => worker, timeoutMs: 50 });
-    worker.posted.length = 1;
-    worker.onmessage?.(new MessageEvent('message', { data: { ok: true, value: 2 } }));
+    const pending = runScript('return x + 1;', 1, { createWorker: () => worker, timeoutMs: 200 });
+    const id = worker.posted[0]!.id;
+    reply(worker, id, { ok: true, value: 2 });
     await expect(pending).resolves.toMatchObject({ ok: true, value: 2, timedOut: false });
   });
 
-  it('worker 不回消息（死循环）→ 超时终止', async () => {
+  it('连续执行复用同一个 Worker（工厂只调用一次）', async () => {
     const worker = fakeWorker();
-    const outcome = await runScript('while (true) {}', 1, {
-      createWorker: () => worker,
-      timeoutMs: 20,
-    });
+    const factory = () => worker;
+    const first = runScript('return 1;', 0, { createWorker: factory, timeoutMs: 200 });
+    reply(worker, worker.posted[0]!.id, { ok: true, value: 1 });
+    await first;
+    const second = runScript('return 2;', 0, { createWorker: factory, timeoutMs: 200 });
+    expect(worker.posted).toHaveLength(2);
+    reply(worker, worker.posted[1]!.id, { ok: true, value: 2 });
+    await expect(second).resolves.toMatchObject({ ok: true, value: 2 });
+    expect(worker.terminated).toBe(false);
+  });
+
+  it('worker 不回消息（死循环）→ 超时终止，下次执行重建 Worker', async () => {
+    const workers: (Worker & { posted: { id: number }[]; terminated: boolean })[] = [];
+    const factory = () => {
+      const worker = fakeWorker();
+      workers.push(worker);
+      return worker;
+    };
+    const outcome = await runScript('while (true) {}', 1, { createWorker: factory, timeoutMs: 20 });
     expect(outcome.timedOut).toBe(true);
-    expect(outcome.ok).toBe(false);
-    expect(outcome.error).toContain('超时');
+    expect(workers[0]!.terminated).toBe(true);
+
+    const next = runScript('return 7;', 0, { createWorker: factory, timeoutMs: 200 });
+    expect(workers).toHaveLength(2); // 超时后旧 Worker 已废弃，新建一个
+    const second = workers[1]!;
+    reply(second, second.posted[0]!.id, { ok: true, value: 7 });
+    await expect(next).resolves.toMatchObject({ ok: true, value: 7 });
   });
 });

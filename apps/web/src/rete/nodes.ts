@@ -1,4 +1,5 @@
 import { ClassicPreset } from 'rete';
+import { runScript } from './scriptRunner';
 import type { ParamBinding, ParamValueType, ParamWidget } from '@rosui/ir';
 import {
   BooleanControl,
@@ -194,30 +195,17 @@ export class ScriptNode extends ClassicPreset.Node {
     this.addOutput('out', new ClassicPreset.Output(numberSocket, 'out'));
   }
 
-  /** 本能力只在浏览器本地执行用户自己粘贴的代码；不是沙箱，别贴不可信代码。
-   *  new Function 是同步执行，真正的硬超时只能靠 Worker；这里给代码注入一个
-   *  __timeout() 守卫（在循环里调用可主动中断）+ 执行前后 50ms 墙钟检查，
-   *  再限制结果必须是有限数字/字符串，覆盖常见失控场景而不把错误抛到全局。 */
-  run(): void {
-    const deadline = Date.now() + 50;
-    const timeout = (): void => {
-      if (Date.now() > deadline) throw new Error('执行超时（50ms）');
-    };
-    try {
-      const compiled = new Function('x', '__timeout', `"use strict";\n${this.code}`);
-      const value: unknown = compiled(this.control.value ?? 0, timeout);
-      timeout();
-      if (
-        (typeof value !== 'number' || !Number.isFinite(value)) &&
-        typeof value !== 'string'
-      ) {
-        throw new Error('结果必须是有限数字或字符串');
-      }
-      this.result = value;
+  /** 用户脚本在自己的 Worker 里执行，超时 terminate（见 scriptRunner.ts）；
+   *  不是安全沙箱，别贴不可信代码。 */
+  async run(): Promise<void> {
+    this.error = null;
+    const outcome = await runScript(this.code, this.control.value ?? 0);
+    if (outcome.ok) {
+      this.result = outcome.value;
       this.error = null;
-    } catch (caught) {
+    } else {
       this.result = null;
-      this.error = caught instanceof Error ? caught.message : String(caught);
+      this.error = outcome.error;
     }
   }
 

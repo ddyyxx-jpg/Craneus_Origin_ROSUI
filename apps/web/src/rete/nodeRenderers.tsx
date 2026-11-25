@@ -105,10 +105,9 @@ export function ScriptNodeComponent({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   Drag.useNoDrag(textareaRef);
   const selected = data.selected || false;
-  const run = () => {
+  const run = (): void => {
     data.code = code;
-    data.run();
-    setVersion((value) => value + 1);
+    void data.run().then(() => setVersion((value) => value + 1));
   };
   useEffect(() => {
     setCode(data.code);

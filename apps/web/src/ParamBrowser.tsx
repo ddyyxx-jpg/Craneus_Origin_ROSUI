@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bindingTypeFromRos,
   listRuntimeBindings,
@@ -48,21 +48,35 @@ export function ParamBrowser({
   const [bindingsVersion, setBindingsVersion] = useState(0);
   const connected = status === 'connected';
 
+  const eventValues = useRef(new Map<string, ParamValue | undefined>());
+
   useEffect(() => {
     if (!connected) {
       setRows([]);
+      eventValues.current.clear();
       return;
     }
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flush = (): void => {
+      if (flushTimer) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = undefined;
+        if (!disposed) setRows((prev) => [...prev]);
+      }, 100);
+    };
     const refs = new Map<string, ParamBindingRef>();
-    const refresh = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
+    void client
+      .getParamNames()
+      .then((names) => {
         if (disposed) return;
-        void Promise.all(
-          [...refs.values()].map(async (ref) => {
-            const name = `${ref.node}:${ref.param}`;
+        for (const name of names) {
+          const colon = name.indexOf(':');
+          if (colon < 0) continue;
+          refs.set(name, { node: name.slice(0, colon), param: name.slice(colon + 1) });
+        }
+        return Promise.all(
+          [...refs.entries()].map(async ([name, ref]) => {
             try {
               const result = await client.getParam(ref);
               return { ref, name, value: result.value, type: result.type } satisfies ParamRow;
@@ -70,24 +84,31 @@ export function ParamBrowser({
               return { ref, name, value: undefined, type: 'unknown' } satisfies ParamRow;
             }
           }),
-        ).then((next) => {
-          if (!disposed) setRows(next);
-        });
-      }, 100);
-    };
-    void client.getParamNames().then((names) => {
-      if (disposed) return;
-      for (const name of names) {
-        const colon = name.indexOf(':');
-        if (colon < 0) continue;
-        refs.set(name, { node: name.slice(0, colon), param: name.slice(colon + 1) });
+        );
+      })
+      .then((initial) => {
+        if (!disposed && initial) setRows(initial);
+      });
+    // 事件里已经带值：直接用，别每来一条事件就对全部参数 getParam 一轮（参数多会打爆 rosbridge）。
+    const unsubscribe = client.subscribeAllParamEvents((evt) => {
+      let touched = false;
+      for (const entry of [...evt.newParameters, ...evt.changedParameters]) {
+        const name = `${evt.node}:${entry.name}`;
+        if (!refs.has(name)) continue;
+        eventValues.current.set(name, entry.value);
+        touched = true;
       }
-      refresh();
+      for (const entry of evt.deletedParameters) {
+        const name = `${evt.node}:${entry.name}`;
+        if (!refs.has(name)) continue;
+        eventValues.current.set(name, undefined);
+        touched = true;
+      }
+      if (touched) flush();
     });
-    const unsubscribe = client.subscribeAllParamEvents(() => refresh());
     return () => {
       disposed = true;
-      if (timer) clearTimeout(timer);
+      if (flushTimer) clearTimeout(flushTimer);
       unsubscribe();
     };
   }, [client, connected]);
@@ -149,7 +170,13 @@ export function ParamBrowser({
                 return (
                   <div className="param-row" data-param={row.name} key={row.name}>
                     <span className="param-name">{row.ref.param}</span>
-                    <span className="param-value">{formatValue(row.value)}</span>
+                    <span className="param-value">
+                      {formatValue(
+                        eventValues.current.has(row.name)
+                          ? eventValues.current.get(row.name)
+                          : row.value,
+                      )}
+                    </span>
                     {active ? (
                       <button
                         type="button"

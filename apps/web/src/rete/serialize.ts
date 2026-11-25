@@ -80,29 +80,88 @@ function restoreBinding(node: RosuiNode, binding: ParamBinding): void {
  * 加载 GraphIR v1 文档：先 zod 校验，再清空画布、按 type 重建节点/位置/值/连线。
  * 失败时抛错由调用方 toast；缺节点或缺端口的连线跳过，不让整张图加载失败。
  */
-export async function loadGraph(handle: EditorHandle, input: unknown): Promise<void> {
-  const ir = parseGraph(input);
-  // Editor.clear() 走 noderemoved/connectionremoved 管道，area 会同步移除 DOM/视图，不泄漏。
-  await handle.editor.clear();
+export interface LoadGraphResult {
+  /** 加载出的所有节点，供调用方注册控件/恢复运行期绑定。 */
+  nodes: RosuiNode[];
+  /** 需要调用方重新 bind() 的运行期参数引用。 */
+  runtimeBindings: Array<{
+    node: RosuiNode;
+    ref: { node: string; param: string };
+    valueType: 'double' | 'integer' | 'bool' | 'string' | 'double_array';
+  }>;
+  /** 加载后存在非空代码的 Script 节点数量（用于来源提示）。 */
+  scriptCodeCount: number;
+}
 
+/** 把 `节点:参数` 拆成 ROS 引用；不是合法的「带前导 / 的节点名 + 非空参数」时返回 undefined。 */
+export function parseParamRef(node: string): { node: string; param: string } | undefined {
+  const split = node.indexOf(':');
+  if (split <= 0 || split === node.length - 1 || !node.startsWith('/')) return undefined;
+  return { node: node.slice(0, split), param: node.slice(split + 1) };
+}
+
+/** 把 IR 的 ParamValueType 映射为绑定层类型；string_array 没有对应控件，视为不兼容。 */
+function toBindingValueType(type: ParamBinding['valueType']): LoadGraphResult['runtimeBindings'][number]['valueType'] | undefined {
+  switch (type) {
+    case 'double':
+    case 'integer':
+    case 'boolean':
+    case 'string':
+    case 'double_array':
+      return type === 'boolean' ? 'bool' : type;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * 加载 GraphIR v1 文档：先 zod 校验，再清空画布、按 type 重建节点/位置/值/连线。
+ * 返回重建出的节点与运行期绑定需求；调用方应在注册控件后尝试恢复 bind()。
+ * 未知 type / 缺端点或缺端口的边跳过，不让整张图加载失败。
+ */
+export async function loadGraph(handle: EditorHandle, input: unknown): Promise<LoadGraphResult> {
+  const ir = parseGraph(input);
   const nodes = new Map<string, RosuiNode>();
+  const restored: Array<{ nodeIR: NodeIR; node: RosuiNode }> = [];
+  const runtimeBindings: LoadGraphResult['runtimeBindings'] = [];
+  let scriptCodeCount = 0;
+  const seenIds = new Set<string>();
+  // clear() 前先造好节点，任一节点创建失败或 id 重复时旧画布还在。
   for (const nodeIR of ir.nodes) {
+    if (seenIds.has(nodeIR.id)) throw new Error(`图中存在重复节点 id：${nodeIR.id}`);
+    seenIds.add(nodeIR.id);
     const kind = kindForType(nodeIR.type);
     if (!kind) continue;
     const node = createNode(kind, undefined);
     // Rete 的 node id 只能由 editor.addNode 生成；为了保留保存时的 id 引用与边端点，
     // 用 Object.defineProperty 覆盖只读 id（实例内部此前尚未使用 id，无副作用）。
     Object.defineProperty(node, 'id', { value: nodeIR.id, configurable: true });
+    restored.push({ nodeIR, node });
+  }
+
+  // Editor.clear() 走 noderemoved/connectionremoved 管道，area 会同步移除 DOM/视图，不泄漏。
+  await handle.editor.clear();
+
+  for (const { nodeIR, node } of restored) {
     await handle.editor.addNode(node);
     const view = handle.area.nodeViews.get(node.id);
     if (view) await view.translate(nodeIR.position.x, nodeIR.position.y);
     const binding = bindingForNode(nodeIR);
     if (binding) {
       // 绑定里的 node 字段是保存时的引用（静态=节点 id，运行时=`节点:参数`），
-      // 恢复时原样保留：节点 id 已按文件还原，运行时引用也留着供用户重新绑定。
+      // 恢复时原样保留：节点 id 已按文件还原，运行时引用也留着供调用方重新绑定。
       restoreBinding(node, binding);
+      if (binding.mode === 'runtime') {
+        const ref = parseParamRef(binding.node);
+        const valueType = toBindingValueType(binding.valueType);
+        if (ref && valueType) runtimeBindings.push({ node, ref, valueType });
+      }
     }
-    nodes.set(nodeIR.id, node);
+    const scriptCode = (node as RosuiNode & { code?: unknown }).code;
+    if (node.spec.type === 'Script' && typeof scriptCode === 'string' && scriptCode.trim() !== '') {
+      scriptCodeCount += 1;
+    }
+    nodes.set(node.id, node);
   }
 
   for (const edge of ir.edges) {
@@ -113,4 +172,5 @@ export async function loadGraph(handle: EditorHandle, input: unknown): Promise<v
       new ClassicPreset.Connection(source, edge.sourcePort, target, edge.targetPort) as never,
     );
   }
+  return { nodes: restored.map((item) => item.node), runtimeBindings, scriptCodeCount };
 }

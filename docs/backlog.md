@@ -196,7 +196,7 @@
 
 ### T-030 图保存 / 加载 `.rosui.json` ✅ 已完成
 - owner: D ｜ scope: `apps/web/src/rete/serialize.ts`、`apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`、`e2e/save-load.spec.ts`
-- 验收：工具栏「保存」下载 GraphIR v1（节点/位置/控件值/绑定模式/连线）；「加载」经 `parseGraph` 校验后还原画布并可继续编辑；非法文件 toast 报错且不破坏当前画布；e2e 覆盖「建图→保存→刷新→加载→值/连线一致」。
+- 验收：工具栏「保存」下载 GraphIR v1（节点/位置/控件值/绑定模式/连线）；「加载」经 `parseGraph` 校验后还原画布并可继续编辑；非法文件 toast 报错且不破坏当前画布；e2e 覆盖「建图→保存→刷新→加载→值/连线一致」。已知限制：Script 的 `x` 只恢复 `code`（M5 验收按此口径）。
 - 落地：`apps/web/src/rete/serialize.ts`（`kindForType`/`serializeGraph`/`loadGraph`）、`nodes.ts` 的 `applyParamBinding`、`App.tsx` 保存/加载按钮与动态注册清理、`e2e/save-load.spec.ts`、ADR-007。
 
 ### T-031 LOD 混合渲染与 200 节点压测 ✅ 已完成

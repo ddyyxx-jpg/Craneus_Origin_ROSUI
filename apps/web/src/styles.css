@@ -290,3 +290,18 @@ button.toggle.on .toggle-knob { transform: translateX(20px); }
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* M5 LOD：低缩放下只保留标题与端口控件槽位，尺寸与完整节点一致。 */
+.node-lod-placeholder {
+  position: relative;
+  overflow: hidden;
+  background: #303039;
+  border-color: #4d4d5a;
+  box-sizing: border-box;
+}
+.node-lod-placeholder .title { opacity: 0.75; }
+.node-lod-placeholder .input,
+.node-lod-placeholder .output {
+  visibility: visible;
+}
+.node-lod-placeholder .input-title { opacity: 0.55; }

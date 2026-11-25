@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M5 进行中（保存/加载已完成）** —— 在 M4 基础上加了 GraphIR 文件存盘/加载（`.rosui.json`，含节点位置、控件值、运行期绑定元数据与连线），35 条 Playwright 全绿、`vitest` 43 例。M3 的 Pose 复杂 DOM 控件与 `double_array` 双向绑定、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。
+当前状态：**M5 进行中（保存/加载 + LOD 已完成）** —— GraphIR 文件存盘/加载（`.rosui.json`）与缩放 LOD 混合渲染（<0.35 切占位、200 节点压测 366ms 首帧 / 16.5ms 帧）都跑通；35 条 Playwright 全绿、`vitest` 43 例。M3 的 Pose 复杂 DOM 控件、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。
 
 - UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 2s 内跟着变。
 - 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`、`Pose.pose`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。

@@ -199,9 +199,10 @@
 - 验收：工具栏「保存」下载 GraphIR v1（节点/位置/控件值/绑定模式/连线）；「加载」经 `parseGraph` 校验后还原画布并可继续编辑；非法文件 toast 报错且不破坏当前画布；e2e 覆盖「建图→保存→刷新→加载→值/连线一致」。
 - 落地：`apps/web/src/rete/serialize.ts`（`kindForType`/`serializeGraph`/`loadGraph`）、`nodes.ts` 的 `applyParamBinding`、`App.tsx` 保存/加载按钮与动态注册清理、`e2e/save-load.spec.ts`、ADR-007。
 
-### T-031 LOD 混合渲染与 200 节点压测 ⏳ 待开始
+### T-031 LOD 混合渲染与 200 节点压测 ✅ 已完成
 - owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`docs/artifacts/**`
 - 验收：缩放 < 0.35 时节点内容降级为同尺寸占位（控件不渲染），缩放回来恢复；200 节点图的首帧与拖动帧率有可复现的测量脚本与数字（记录到 `docs/reviews/M5-perf.md`）。
+- 落地：`rete/lod.ts`（`useSyncExternalStore` 广播 + 尺寸缓存）、`rete/LodNode.tsx`（占位节点保留 socket、不卸载 NodeView）、`editor.ts` 的 rAF 节流 zoomed → LOD、`e2e/perf.spec.ts`。实测 full 首帧 366ms / placeholder 240ms，拖动均 16.5ms/帧。
 
 ### T-032 撤销 / 重做 + 复制粘贴 ⏳ 待开始
 - owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`

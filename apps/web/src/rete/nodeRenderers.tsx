@@ -3,6 +3,7 @@ import { Drag, Presets as ReactPresets, type ClassicScheme, type RenderEmit } fr
 import { listRuntimeBindings, type ParamBindingDefinition } from '../binding/bindings';
 import { getSharedClient } from '../ros';
 import { InspectorNode, ScriptNode } from './nodes';
+import { classicNodeRenderer, withCustomNodeLod, withNodeLod } from './LodNode';
 
 /** 订阅所有参数事件，100ms 节流刷新参数值（不依赖具体参数 ref）。 */
 function useParamValues(refs: readonly ParamBindingDefinition['ref'][]) {
@@ -181,17 +182,17 @@ export function customNode(
 ): ((props: { data: unknown; emit: RenderEmit<ClassicScheme> }) => ReactElement) | null {
   const payload = data.payload;
   if (payload instanceof InspectorNode) {
-    return ((props: { data: InspectorNode; emit: RenderEmit<ClassicScheme> }) => (
-      <InspectorNodeComponent data={props.data} />
+    return withCustomNodeLod((props) => (
+      <InspectorNodeComponent data={props.data as unknown as InspectorNode} />
     )) as (props: { data: unknown; emit: RenderEmit<ClassicScheme> }) => ReactElement;
   }
   if (payload instanceof ScriptNode) {
-    return ((props: { data: ScriptNode; emit: RenderEmit<ClassicScheme> }) => (
-      <ScriptNodeComponent data={props.data} emit={props.emit} />
+    return withCustomNodeLod((props) => (
+      <ScriptNodeComponent data={props.data as unknown as ScriptNode} emit={props.emit} />
     )) as (props: { data: unknown; emit: RenderEmit<ClassicScheme> }) => ReactElement;
   }
   // Preset does NOT fall back when customize.node returns null — must return classic Node.
-  return ReactPresets.classic.Node as unknown as (
+  return withNodeLod(classicNodeRenderer) as (
     props: { data: unknown; emit: RenderEmit<ClassicScheme> },
   ) => ReactElement;
 }

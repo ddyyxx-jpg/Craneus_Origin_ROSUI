@@ -313,8 +313,9 @@ export class PoseControl extends ClassicPreset.Control implements PoseControlMod
     this.fieldTexts = next.map((v) => String(v));
     this.errors = next.map(() => null);
     this.text = JSON.stringify(next);
-    this.valid = true;
-    if (changed) this.onChange?.({ value: next, text: this.text, valid: true });
+    // 七个有限数才算合法；程序写入也走这里，避免把脏值当成可回灌状态。
+    this.valid = next.length === 7 && next.every((v) => Number.isFinite(v));
+    if (changed) this.onChange?.({ value: next, text: this.text, valid: this.valid });
   }
 
   commitField(index: number, text: string): boolean {
@@ -334,6 +335,8 @@ export class PoseControl extends ClassicPreset.Control implements PoseControlMod
       // setValue 会统一刷新 fieldTexts/errors；只保留其余字段的真实报错状态。
       this.errors = nextErrors.map((error, i) => (i === index ? null : error));
       this.fieldTexts = nextTexts;
+      // 其它字段还有错时，整组仍属非法：别让 setValue 的 valid=true 掩盖掉。
+      this.valid = this.errors.every((error) => error === null) && this.value.length === 7;
     }
     return result.valid;
   }

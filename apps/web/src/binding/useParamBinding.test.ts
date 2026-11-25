@@ -161,6 +161,31 @@ describe('ParamBindingController', () => {
     expect(f.listenerCount('/rosui_demo:gain')).toBe(0);
   });
 
+  it('同类型多节点带 instanceId 各自订阅，不互相顶掉', async () => {
+    const f = fakeClient({ '/rosui_demo:pose': [0, 0, 0, 0, 0, 0, 1] });
+    const a = fakeControl('Pose', 'pose');
+    const b = fakeControl('Pose', 'pose');
+    const errors: string[] = [];
+    const controller = new ParamBindingController({
+      client: f.client,
+      onError: (reason) => errors.push(reason),
+    });
+    controller.register('Pose', 'pose', a.control, 'node-a');
+    controller.register('Pose', 'pose', b.control, 'node-b');
+    await f.client.connect();
+    await flush();
+    expect(f.listenerCount('/rosui_demo:pose')).toBe(2);
+
+    controller.onControlChange('Pose', 'pose', [1, 2, 3, 0, 0, 0, 1], 'node-b');
+    await flush();
+    expect(f.setCalls).toContainEqual({
+      name: '/rosui_demo:pose',
+      value: [1, 2, 3, 0, 0, 0, 1],
+    });
+    controller.dispose();
+    expect(f.listenerCount('/rosui_demo:pose')).toBe(0);
+  });
+
   it('未绑定控件不受连接状态影响，readonly 始终 false', async () => {
     const f = fakeClient();
     const c = fakeControl('Threshold', 'value');

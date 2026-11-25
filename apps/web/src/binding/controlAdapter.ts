@@ -15,8 +15,15 @@ export interface ControlAdapterOptions {
   nodeType: string;
   portKey: string;
   control: RosuiControl;
+  /** 节点实例 id：同类型多节点靠它区分绑定 entry。 */
+  nodeId?: string;
   /** 用户合法改值（控件自身校验通过后）→ 回灌 ROS。 */
-  onUserChange: (nodeType: string, portKey: string, value: ParamValue) => void;
+  onUserChange: (
+    nodeType: string,
+    portKey: string,
+    value: ParamValue,
+    nodeId?: string,
+  ) => void;
 }
 
 /**
@@ -31,12 +38,14 @@ export function createControlAdapter(options: ControlAdapterOptions): BoundContr
   const originalChange = control.onChange;
   const guardedChange: ControlValueChange = (change) => {
     if (isProgrammaticWrite(control)) return;
-    // M3：double_array（pose）是 readonly number[]，不应被当成「非标量对象」过滤掉。
-    // 只排除 null 与普通对象；数组放行。
-    const isPlainObject =
-      typeof change.value === 'object' && change.value !== null && !Array.isArray(change.value);
-    if (change.valid && !isPlainObject) {
-      onUserChange(options.nodeType, options.portKey, change.value as ParamValue);
+    // 只放行「标量」与「标量数组」（pose 的 double_array）；普通对象/null/对象数组一律拦下，
+    // 避免将来的 json widget 把对象直接写进 ROS 参数。
+    const isScalar = (v: unknown): boolean =>
+      typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+    const value = change.value;
+    const isScalarArray = Array.isArray(value) && value.every(isScalar);
+    if (change.valid && (isScalar(value) || isScalarArray)) {
+      onUserChange(options.nodeType, options.portKey, value as ParamValue, options.nodeId);
     }
     originalChange?.(change);
   };

@@ -3,9 +3,12 @@ import type { GraphIR } from '@rosui/ir';
 import { CurrentIR } from './controls';
 import { createEditor, addNode, connect, toGraphIR, type EditorHandle } from './rete/editor';
 import { createNode, type RosuiNode } from './rete/nodes';
-import type { ParamValue, RosStatus } from './ros';
+import type { ParamBindingRef, ParamValue, RosStatus } from './ros';
+import { getSharedClient } from './ros';
 import { createControlAdapter } from './binding/controlAdapter';
 import { useParamBinding } from './binding/useParamBinding';
+import { controlValueType, typesCompatible, type BindingValueType } from './binding/bindings';
+import { ParamBrowser, type SelectedPort } from './ParamBrowser';
 
 function snapshot(handle: EditorHandle | null): GraphIR | null {
   return handle ? toGraphIR(handle) : null;
@@ -19,12 +22,6 @@ const STATUS_TEXT: Record<RosStatus, string> = {
   error: '连接错误',
 };
 
-const BOUND_NODES: ReadonlyArray<{ kind: 'gain' | 'mode' | 'switch'; nodeType: string; portKey: string }> = [
-  { kind: 'gain', nodeType: 'Gain', portKey: 'gain' },
-  { kind: 'mode', nodeType: 'Mode', portKey: 'mode' },
-  { kind: 'switch', nodeType: 'Switch', portKey: 'enabled' },
-];
-
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<EditorHandle | null>(null);
@@ -33,6 +30,8 @@ export function App() {
   const [lastGain, setLastGain] = useState<number | null>(null);
   const [graph, setGraph] = useState<GraphIR | null>(null);
   const [url, setUrl] = useState('ws://127.0.0.1:9090');
+  const [selectedPort, setSelectedPort] = useState<SelectedPort | null>(null);
+  const [localToast, setLocalToast] = useState('');
 
   const binding = useParamBinding();
   // M3：动态添加的节点也要接进绑定层；unregister 在画布卸载时统一清理。
@@ -59,6 +58,17 @@ export function App() {
     [onControlChange],
   );
 
+  // M4 A: Rete 的 nodepicked 事件在画布点击节点标题/控件区时触发，记录当前选中端口。
+  const selectNode = useCallback((nodeId: string) => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const node = editorHandle.editor.getNode(nodeId);
+    if (!node) return;
+    const nodeType = node.spec.type;
+    const portKey = nodeType === 'Script' ? 'x' : node.spec.inputKey;
+    setSelectedPort({ instanceId: node.id, portKey, nodeType });
+  }, []);
+
   useEffect(() => {
     const container = canvasRef.current;
     if (!container) return;
@@ -67,7 +77,7 @@ export function App() {
     let handle: EditorHandle | null = null;
     const unregisters: Array<() => void> = [];
 
-    void createEditor(container)
+    void createEditor(container, selectNode)
       .then(async (created) => {
         if (disposed) {
           created.destroy();
@@ -82,33 +92,33 @@ export function App() {
 
         const gain = await addNode(created, 'gain', 140, 120, onValue);
         const threshold = await addNode(created, 'threshold', 420, 120, onValue);
-        await addNode(created, 'label', 140, 340, onValue);
+        const label = await addNode(created, 'label', 140, 340, onValue);
         const mode = await addNode(created, 'mode', 420, 340, onValue);
         const sw = await addNode(created, 'switch', 700, 340, onValue);
         // 保留 M1 的「连线隐藏控件」效果：threshold.value 被连线后，其控件会隐藏。
         await connect(created, gain.id, 'out', threshold.id, 'value');
 
         if (disposed) return;
-        // 把已绑定的三个内联控件接进绑定控制器；Threshold 保持未绑定。
-        const boundNodes: Record<'gain' | 'mode' | 'switch', RosuiNode> = { gain, mode, switch: sw };
-        for (const item of BOUND_NODES) {
-          const node = boundNodes[item.kind];
+        // M4 A: 所有带控件的节点都注册进绑定层，运行时绑定可以指向任意端口。
+        // 静态绑定表只覆盖 Gain/Mode/Switch/Pose；其他节点默认保持本地值。
+        const allNodes: RosuiNode[] = [gain, threshold, label, mode, sw];
+        for (const node of allNodes) {
           const adapter = createControlAdapter({
-            nodeType: item.nodeType,
-            portKey: item.portKey,
+            nodeType: node.spec.type,
+            portKey: node.spec.inputKey,
             nodeId: node.id,
             control: node.control,
             onUserChange: handleUserChange,
           });
           unregisters.push(
             binding.register(
-              item.nodeType,
-              item.portKey,
+              node.spec.type,
+              node.spec.inputKey,
               {
                 ...adapter,
                 setValue(value, origin) {
                   adapter.setValue(value, origin);
-                  if (typeof value === 'number') setLastGain(value);
+                  if (node.spec.type === 'Gain' && typeof value === 'number') setLastGain(value);
                   refresh();
                 },
               },
@@ -134,10 +144,37 @@ export function App() {
       handle?.destroy();
       handleRef.current = null;
     };
-  }, [binding.register, handleUserChange, onValue, refresh]);
+  }, [binding.register, handleUserChange, onValue, refresh, selectNode]);
 
   const statusClass = `ros-status ros-status--${binding.status}`;
   const connected = binding.status === 'connected';
+
+  const { bind, unbind } = binding;
+  const handleBind = useCallback(
+    (ref: ParamBindingRef, valueType: BindingValueType) => {
+      if (!selectedPort) return;
+      const expected = controlValueType(selectedPort.nodeType, selectedPort.portKey);
+      if (!typesCompatible(valueType, expected)) {
+        setLocalToast(`${selectedPort.nodeType}.${selectedPort.portKey} 控件不接受 ${valueType} 类型参数`);
+        return;
+      }
+      setLocalToast('');
+      bind(selectedPort.nodeType, selectedPort.portKey, ref, valueType, selectedPort.instanceId);
+      refresh();
+    },
+    [bind, selectedPort, refresh],
+  );
+  const handleUnbind = useCallback(
+    () => {
+      if (!selectedPort) return;
+      unbind(selectedPort.nodeType, selectedPort.portKey, selectedPort.instanceId);
+      refresh();
+    },
+    [unbind, selectedPort, refresh],
+  );
+  const handleTypeReject = useCallback((reason: string) => {
+    setLocalToast(reason);
+  }, []);
 
   return (
     <div className="app">
@@ -230,14 +267,46 @@ export function App() {
         >
           + Pose
         </button>
+        <button
+          type="button"
+          data-testid="add-inspector"
+          disabled={!ready}
+          onClick={() => {
+            const editorHandle = handleRef.current;
+            if (!editorHandle) return;
+            void addNode(editorHandle, 'inspector', 300, 700, onValue).then(() => refresh());
+          }}
+        >
+          + Inspector
+        </button>
+        <button
+          type="button"
+          data-testid="add-script"
+          disabled={!ready}
+          onClick={() => {
+            const editorHandle = handleRef.current;
+            if (!editorHandle) return;
+            void addNode(editorHandle, 'script', 600, 700, onValue).then(() => refresh());
+          }}
+        >
+          + Script
+        </button>
       </header>
-      {binding.toast ? (
+      {binding.toast || localToast ? (
         <div className="ros-toast" data-testid="ros-toast" role="alert">
-          {binding.toast}
+          {binding.toast || localToast}
         </div>
       ) : null}
       <div className="workspace">
         <div ref={canvasRef} className="canvas" />
+        <ParamBrowser
+          client={getSharedClient()}
+          status={binding.status}
+          selected={selectedPort}
+          onBind={handleBind}
+          onUnbind={handleUnbind}
+          onTypeReject={handleTypeReject}
+        />
         <aside className="ir-panel">
           <div className="ir-title">当前 IR（只读）</div>
           <CurrentIR graph={graph} />

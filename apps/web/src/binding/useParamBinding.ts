@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  bindingFor,
+  bindingForInstance,
+  clearRuntimeBinding,
   matchesBindingType,
+  setRuntimeBinding,
+  type BindingValueType,
   type ParamBindingDefinition,
 } from './bindings';
-import { RosClientImpl, type RosClient } from '../ros';
+import { RosClientImpl, getSharedClient, type RosClient } from '../ros';
 import type {
+  ParamBindingRef,
   ParamValue,
   RosStatus,
 } from '../ros';
@@ -78,6 +82,8 @@ export class ParamBindingController {
   private readonly now: () => number;
   private readonly clearTimeoutFn: (handle: ReturnType<typeof setTimeout>) => void;
   private readonly entries = new Map<string, Entry>();
+  /** 所有已注册控件（含未绑定端口），供运行时 bind/unbind 即时建/拆订阅。 */
+  private readonly controls = new Map<string, BoundControl>();
   private readonly pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly statusUnsubscribe: () => void;
   private disposed = false;
@@ -106,12 +112,19 @@ export class ParamBindingController {
     portKey: string,
     control: BoundControl,
     instanceId?: string,
+    ref?: ParamBindingRef,
+    valueType?: BindingValueType,
   ): () => void {
     const key = entryKey(nodeType, portKey, instanceId);
-    const definition = bindingFor(nodeType, portKey);
+    this.controls.set(key, control);
+    const definition = ref
+      ? { ref, valueType: valueType ?? 'double' }
+      : bindingForInstance(nodeType, portKey, instanceId);
     if (!definition) {
       control.setReadonly(false);
-      return () => undefined;
+      return () => {
+        if (this.controls.get(key) === control) this.controls.delete(key);
+      };
     }
     // 同 key 重注册（React 重渲染 / StrictMode 双挂载）时先清掉旧 entry，否则旧订阅泄漏。
     const previous = this.entries.get(key);
@@ -135,6 +148,7 @@ export class ParamBindingController {
     if (this.currentStatus === 'connected') void this.activateEntry(entry);
 
     return () => {
+      if (this.controls.get(key) === control) this.controls.delete(key);
       if (this.entries.get(key) !== entry) return;
       this.disposeEntry(entry);
       this.entries.delete(key);
@@ -193,6 +207,47 @@ export class ParamBindingController {
 
   disconnect(): void {
     this.client.close();
+  }
+
+  /** M4 A：把已注册控件切换到新的运行时绑定，立即拉新参数初值。 */
+  bind(
+    nodeType: string,
+    portKey: string,
+    ref: ParamBindingRef,
+    valueType: BindingValueType,
+    instanceId?: string,
+  ): void {
+    const key = entryKey(nodeType, portKey, instanceId);
+    setRuntimeBinding(nodeType, portKey, { ref, valueType }, instanceId);
+    const control = this.controls.get(key);
+    if (!control) return;
+    const existing = this.entries.get(key);
+    if (existing) this.disposeEntry(existing);
+    const replacement: Entry = {
+      key,
+      control,
+      definition: { ref, valueType },
+      lastKnownGood: controlLastValue(control),
+      warmupUntil: 0,
+      echoUntil: 0,
+      active: false,
+      activateToken: 0,
+      writeSeq: 0,
+    };
+    this.entries.set(key, replacement);
+    replacement.control.setReadonly(false);
+    if (this.currentStatus === 'connected') void this.activateEntry(replacement);
+  }
+
+  /** M4 A：解除绑定，控件回到本地值，不再下发；同时清掉运行期绑定记录。 */
+  unbind(nodeType: string, portKey: string, instanceId?: string): void {
+    clearRuntimeBinding(nodeType, portKey, instanceId);
+    const key = entryKey(nodeType, portKey, instanceId);
+    const existing = this.entries.get(key);
+    if (!existing) return;
+    this.disposeEntry(existing);
+    this.entries.delete(key);
+    existing.control.setReadonly(false);
   }
 
   /** 完整清理：连接状态订阅、参数订阅、所有 timer。 */
@@ -316,7 +371,17 @@ export interface UseParamBindingResult {
     portKey: string,
     control: BoundControl,
     instanceId?: string,
+    ref?: ParamBindingRef,
+    valueType?: BindingValueType,
   ): () => void;
+  bind(
+    nodeType: string,
+    portKey: string,
+    ref: ParamBindingRef,
+    valueType: BindingValueType,
+    instanceId?: string,
+  ): void;
+  unbind(nodeType: string, portKey: string, instanceId?: string): void;
   onControlChange(
     nodeType: string,
     portKey: string,
@@ -327,7 +392,7 @@ export interface UseParamBindingResult {
 
 export function useParamBinding(client?: RosClient): UseParamBindingResult {
   const injected = useRef<RosClient | undefined>(client);
-  const [instance, setInstance] = useState<RosClient>(() => injected.current ?? new RosClientImpl());
+  const [instance, setInstance] = useState<RosClient>(() => injected.current ?? getSharedClient());
   const instanceUrl = useRef(injected.current ? '' : 'ws://127.0.0.1:9090');
   const controllerRef = useRef<ParamBindingController | undefined>(undefined);
   const [status, setStatus] = useState<RosStatus>(instance.status);
@@ -383,8 +448,31 @@ export function useParamBinding(client?: RosClient): UseParamBindingResult {
 
   const disconnect = useCallback(() => controllerRef.current?.disconnect(), []);
   const register = useCallback(
-    (nodeType: string, portKey: string, control: BoundControl, instanceId?: string) =>
-      controllerRef.current?.register(nodeType, portKey, control, instanceId) ?? (() => undefined),
+    (
+      nodeType: string,
+      portKey: string,
+      control: BoundControl,
+      instanceId?: string,
+      ref?: ParamBindingRef,
+      valueType?: BindingValueType,
+    ) =>
+      controllerRef.current?.register(nodeType, portKey, control, instanceId, ref, valueType) ??
+      (() => undefined),
+    [],
+  );
+  const bind = useCallback(
+    (
+      nodeType: string,
+      portKey: string,
+      ref: ParamBindingRef,
+      valueType: BindingValueType,
+      instanceId?: string,
+    ) => controllerRef.current?.bind(nodeType, portKey, ref, valueType, instanceId),
+    [],
+  );
+  const unbind = useCallback(
+    (nodeType: string, portKey: string, instanceId?: string) =>
+      controllerRef.current?.unbind(nodeType, portKey, instanceId),
     [],
   );
   const onControlChange = useCallback(
@@ -395,7 +483,7 @@ export function useParamBinding(client?: RosClient): UseParamBindingResult {
 
   // 保持返回对象稳定（除状态字段），避免调用方 effect 因引用变化反复重跑。
   return useMemo(
-    () => ({ status, statusDetail, toast, connect, disconnect, register, onControlChange }),
-    [status, statusDetail, toast, connect, disconnect, register, onControlChange],
+    () => ({ status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange }),
+    [status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange],
   );
 }

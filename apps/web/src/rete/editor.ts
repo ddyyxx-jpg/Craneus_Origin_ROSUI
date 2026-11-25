@@ -20,7 +20,10 @@ export interface EditorHandle {
 }
 
 /** Create the Rete node editor with area, connection and React rendering plugins. */
-export async function createEditor(container: HTMLElement): Promise<EditorHandle> {
+export async function createEditor(
+  container: HTMLElement,
+  onNodePicked?: (nodeId: string) => void,
+): Promise<EditorHandle> {
   const editor = new NodeEditor<Schemes>();
   const area = new AreaPlugin<Schemes, Extra>(container);
   const connection = new ConnectionPlugin<Schemes, Extra>();
@@ -36,6 +39,18 @@ export async function createEditor(container: HTMLElement): Promise<EditorHandle
 
   // Official extension: hides an input's inline control while connected, restores it on disconnect.
   AreaExtensions.showInputControl(area);
+
+  // M4 A: stamp node id on the rendered DOM so the canvas click handler can map a
+  // clicked title/control region back to a specific node instance for binding.
+  area.addPipe((context) => {
+    if (context.type === 'render' && context.data.type === 'node') {
+      context.data.element.setAttribute('data-node-id', context.data.payload.id);
+    }
+    if (context.type === 'nodepicked' && onNodePicked) {
+      onNodePicked(context.data.id);
+    }
+    return context;
+  });
 
   return {
     editor,

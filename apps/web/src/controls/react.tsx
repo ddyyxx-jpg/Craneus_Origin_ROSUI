@@ -6,6 +6,7 @@ import {
   getControlBindingState,
   subscribeControlBindingState,
 } from '../binding/controlState';
+import { customNode } from '../rete/nodeRenderers';
 import {
   BooleanControl,
   PoseControl,
@@ -349,6 +350,8 @@ const ClassicControl = ReactPresets.classic.Control as unknown as (props: {
 export function registerControls() {
   return ReactPresets.classic.setup({
     customize: {
+      // M4 B/C: Inspector/Script nodes render their own DOM; all others stay classic.
+      node: customNode,
       control(ctx) {
         const payload = ctx.payload;
         if (payload instanceof TextControl) {

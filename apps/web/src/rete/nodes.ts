@@ -9,6 +9,7 @@ import {
   valueTypeForControl,
   type RosuiControl,
 } from '../controls';
+import { runtimeBindingFor } from '../binding/bindings';
 
 export interface NodeSpec {
   type: string;
@@ -76,6 +77,11 @@ export function buildControl(
   }
 }
 
+/** M4 A: BindingValueType 的 'bool' 对应 IR 的 'boolean'。 */
+function irValueType(valueType: string): ParamValueType {
+  return valueType === 'bool' ? 'boolean' : (valueType as ParamValueType);
+}
+
 export class RosuiNode extends ClassicPreset.Node {
   readonly spec: NodeSpec;
   readonly control: RosuiControl;
@@ -111,14 +117,118 @@ export class RosuiNode extends ClassicPreset.Node {
   }
 
   toParamBinding(): ParamBinding {
+    // M4 A: 运行时绑定在 IR 中以 mode:'runtime' 暴露，node/param 记录 ROS 目标，
+    // 控件本地值另存 value；无运行期绑定时保持 M1-M3 的静态结构不变。
+    const runtime = runtimeBindingFor(this.spec.type, this.spec.inputKey, this.id);
     return {
-      node: this.id,
-      param: this.spec.inputKey,
-      valueType: this.spec.valueType,
-      mode: 'static',
+      node: runtime ? `${runtime.ref.node}:${runtime.ref.param}` : this.id,
+      param: runtime ? this.spec.inputKey : this.spec.inputKey,
+      valueType: runtime ? irValueType(runtime.valueType) : this.spec.valueType,
+      mode: runtime ? 'runtime' : 'static',
       widget: this.spec.widget,
       value: this.currentValue as ParamBinding['value'],
       constraints: this.control.constraints,
+    };
+  }
+}
+
+/** M4 B: node that renders a live, scrollable DOMWidget panel of all runtime bindings. */
+export class InspectorNode extends ClassicPreset.Node {
+  readonly spec: NodeSpec = {
+    type: 'Inspector',
+    label: 'Inspector',
+    inputKey: 'inspector',
+    inputLabel: 'bindings',
+    widget: 'json',
+    valueType: 'string',
+    initial: '',
+  };
+
+  constructor() {
+    super('Inspector');
+  }
+
+  toParamBinding(): ParamBinding {
+    return {
+      node: this.id,
+      param: 'inspector',
+      valueType: 'string',
+      mode: 'static',
+      widget: 'json',
+      value: '',
+    };
+  }
+}
+
+/** M4 C: node with a locally editable JS expression and one number input/output. */
+export class ScriptNode extends ClassicPreset.Node {
+  readonly spec: NodeSpec = {
+    type: 'Script',
+    label: 'Script',
+    inputKey: 'x',
+    inputLabel: 'x',
+    widget: 'number',
+    valueType: 'double',
+    initial: 1,
+  };
+  readonly control: NumberControl;
+  code = 'return x * 2;';
+  result: number | string | null = null;
+  error: string | null = null;
+  currentValue: unknown = 1;
+
+  constructor(onChange?: (node: ScriptNode, value: unknown, valid: boolean) => void) {
+    super('Script');
+    this.control = new NumberControl({
+      initial: 1,
+      change: (change) => {
+        if (!change.valid) return;
+        this.currentValue = change.value;
+        onChange?.(this, change.value, change.valid);
+      },
+    });
+    const numberSocket = new ClassicPreset.Socket('double');
+    const input = new ClassicPreset.Input(numberSocket, 'x');
+    input.addControl(this.control);
+    this.addInput('x', input);
+    this.addOutput('out', new ClassicPreset.Output(numberSocket, 'out'));
+  }
+
+  /** 本能力只在浏览器本地执行用户自己粘贴的代码；不是沙箱，别贴不可信代码。
+   *  new Function 是同步执行，真正的硬超时只能靠 Worker；这里给代码注入一个
+   *  __timeout() 守卫（在循环里调用可主动中断）+ 执行前后 50ms 墙钟检查，
+   *  再限制结果必须是有限数字/字符串，覆盖常见失控场景而不把错误抛到全局。 */
+  run(): void {
+    const deadline = Date.now() + 50;
+    const timeout = (): void => {
+      if (Date.now() > deadline) throw new Error('执行超时（50ms）');
+    };
+    try {
+      const compiled = new Function('x', '__timeout', `"use strict";\n${this.code}`);
+      const value: unknown = compiled(this.control.value ?? 0, timeout);
+      timeout();
+      if (
+        (typeof value !== 'number' || !Number.isFinite(value)) &&
+        typeof value !== 'string'
+      ) {
+        throw new Error('结果必须是有限数字或字符串');
+      }
+      this.result = value;
+      this.error = null;
+    } catch (caught) {
+      this.result = null;
+      this.error = caught instanceof Error ? caught.message : String(caught);
+    }
+  }
+
+  toParamBinding(): ParamBinding {
+    return {
+      node: this.id,
+      param: 'code',
+      valueType: 'string',
+      mode: 'static',
+      widget: 'text',
+      value: this.code,
     };
   }
 }
@@ -181,6 +291,24 @@ export const NODE_REGISTRY = {
     valueType: 'double_array',
     initial: [0, 0, 0, 0, 0, 0, 1],
   },
+  inspector: {
+    type: 'Inspector',
+    label: 'Inspector',
+    inputKey: 'inspector',
+    inputLabel: 'bindings',
+    widget: 'json',
+    valueType: 'string',
+    initial: '',
+  },
+  script: {
+    type: 'Script',
+    label: 'Script',
+    inputKey: 'x',
+    inputLabel: 'x',
+    widget: 'number',
+    valueType: 'double',
+    initial: 1,
+  },
 } as const satisfies Record<string, NodeSpec>;
 
 export type NodeKind = keyof typeof NODE_REGISTRY;
@@ -189,6 +317,11 @@ export function createNode(
   kind: NodeKind,
   onChange?: (node: RosuiNode, value: unknown, valid: boolean) => void,
 ): RosuiNode {
+  if (kind === 'inspector') return new InspectorNode() as unknown as RosuiNode;
+  if (kind === 'script') {
+    // 脚本节点没有内联 ROS 控件；IR 的 value 存代码字符串。
+    return new ScriptNode() as unknown as RosuiNode;
+  }
   return new RosuiNode(NODE_REGISTRY[kind], onChange);
 }
 

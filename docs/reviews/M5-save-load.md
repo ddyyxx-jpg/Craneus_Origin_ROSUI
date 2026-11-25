@@ -42,3 +42,20 @@ playwright: m3-pose + save-load + m4-runtime-binding + 3 条动态探针 # 13 pa
 
 - 本机全量 `playwright test` 在「用例全过」后进程不退出（450s 超时被 kill，`EXIT=124`），单文件运行可正常退出；该问题在 #3/#4 上都出现，暂记为环境/teardown 问题，不阻塞评审，但建议单独排查（疑似 demo-stack 或 webServer 子进程未被回收）。
 - 建议合入顺序：本 PR → #4（#4 的 `apps/web/src/rete/editor.ts:9` 直接 import `./serialize`，base 也搭在本分支上）。
+
+## 二轮处置（2026-11-25，lead 复核 + 真 ROS 探针）
+
+| # | 处置 | 证据 |
+|---|---|---|
+| 1 P0 | 已修：`registerDynamic` 跳过无控件节点（Inspector）；加载失败路径统一 `refresh()`，IR 面板不再停在旧图 | `App.tsx` `registerDynamic` 首行守卫；e2e「含 Inspector 的图：保存 → reload → 加载不崩」断言 `ros-toast` 为空 |
+| 2 P0 | 已修：`loadGraph` 返回 `runtimeBindings`，加载后按 `<节点:参数>` 重新 `bind()`；未连接只登记不下发；恢复失败计数值 toast「N 个运行期绑定未恢复」 | 新增 `e2e/save-load-runtime.spec.ts`：真 rosbridge 下新增 Gain → 绑 `/rosui_demo:gain` → 存盘 → reload → 加载 → 改 2.7 → `ros2 param get` 为 2.7 |
+| 3 P0 | 已修：`clear()` 前 `serializeGraph` 快照；失败用快照重建并回滚 `graph/selectedPort/lastGain`；重建再失败 toast「画布已重置，请用备份恢复」 | e2e「非法文件」两条断画布节点数不变 |
+| 4 P1 | 已修：`allUnregisters` 统一收口初始 5 节点与动态节点；`clearDynamicRegistrations` 全量清理 | `App.tsx` `allUnregisters` |
+| 5 P1 | 已修：下载名 `rosui-graph.rosui.json`；>8MB 拒绝；`JSON.parse` 失败给中文文案；扩展名校验仅在文件名带扩展名时生效（Playwright 临时文件无扩展名按内容校验） | `App.tsx` `handleLoadGraph` |
+| 6 P1 | 已修：加载后存在非空 Script code 时 toast「已加载脚本节点，运行前请确认来源」 | `loadGraph` 返回 `scriptCodeCount` |
+| 7 P2 | 不改（已知限制）：Script 只恢复 `code`，`x` 控件回默认；backlog T-030 验收已按此口径标注 | `docs/backlog.md` |
+| 8 P2 | 不改：边 id 未进 IR schema，重新生成；若后续做按边选择/撤销再引入 | `packages/ir` schema 未含边 id |
+| 9 P2 | 已修：`e2e/save-load.spec.ts` 5 条 + `e2e/save-load-runtime.spec.ts` 1 条（覆盖 runtime 恢复） | 全量 38 passed |
+| 10 P2 | 已修：README 数字与 backlog 验收口径按实测更新 | 本分支全量 38 条（#4 perf 2 条另计） |
+
+二轮门禁：`build` 0、`check` 0、`vitest` 43 passed、`playwright` 38 passed。

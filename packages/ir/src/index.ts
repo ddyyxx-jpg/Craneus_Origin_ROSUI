@@ -4,7 +4,13 @@ import { z } from 'zod';
 // GraphIR v1 — static type definitions
 // ---------------------------------------------------------------------------
 
-export type ParamValueType = 'double' | 'integer' | 'boolean' | 'string' | 'string_array';
+export type ParamValueType =
+  | 'double'
+  | 'integer'
+  | 'boolean'
+  | 'string'
+  | 'string_array'
+  | 'double_array';
 export type ParamMode = 'static' | 'runtime';
 export type ParamWidget = 'number' | 'text' | 'boolean' | 'select' | 'pose' | 'json';
 
@@ -56,7 +62,14 @@ export interface GraphIR {
 // zod schema (runtime validation)
 // ---------------------------------------------------------------------------
 
-const paramValueTypeSchema = z.enum(['double', 'integer', 'boolean', 'string', 'string_array']);
+const paramValueTypeSchema = z.enum([
+  'double',
+  'integer',
+  'boolean',
+  'string',
+  'string_array',
+  'double_array',
+]);
 const paramModeSchema = z.enum(['static', 'runtime']);
 const paramWidgetSchema = z.enum(['number', 'text', 'boolean', 'select', 'pose', 'json']);
 

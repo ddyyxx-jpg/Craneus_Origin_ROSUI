@@ -8,6 +8,7 @@ import {
 } from '../binding/controlState';
 import {
   BooleanControl,
+  PoseControl,
   SelectControl,
   TextControl,
   validateNumber,
@@ -71,6 +72,8 @@ function errorFor(kind: RosuiControl['kind'], text: string, control: RosuiContro
     }
     case 'boolean':
       return null;
+    case 'pose':
+      return null; // pose 的每字段错误由 PoseControlComponent 单独维护
   }
 }
 
@@ -253,6 +256,72 @@ export function NumberControlComponent({ data }: { data: NumberControlModel }) {
   );
 }
 
+/** M3：7 字段紧凑网格的 Pose 控件。每字段 blur/Enter 提交，非法值红框 + 第一条错误信息。 */
+export function PoseControlComponent({ data }: { data: PoseControl }) {
+  const ref = useControlEvents();
+  const binding = useBindingState(data);
+  const [texts, setTexts] = useState<readonly string[]>(data.fieldTexts);
+  const [errors, setErrors] = useState<readonly (string | null)[]>(data.errors);
+  // 控件引用稳定，Rete 更新时 prop 引用不变；绑定层 setValue 会 bumpVersion。
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    // 程序写值（ROS 初值/外部事件）时同步；用户编辑时 data.text/value 变化也会触发，
+    // 但此时 fieldTexts 已由 commitField 更新为同一份值，不会覆盖用户输入。
+    setTexts(data.fieldTexts);
+    setErrors(data.errors);
+    setVersion((v) => v + 1);
+  }, [data.text, binding.version]);
+
+  // 只展示第一条错误（testid 与 number/text 一致）。
+  const firstError = errors.find((error) => error !== null) ?? null;
+
+  return (
+    <span
+      ref={ref}
+      className="rosui-control rosui-pose-control"
+      data-control-kind="pose"
+      data-bound={boundAttribute(binding)}
+    >
+      <span className="pose-grid">
+        {data.labels.map((label, index) => (
+          <label key={label} className="pose-field">
+            <span className="pose-field-label">{label}</span>
+            <input
+              type="number"
+              step="any"
+              className={errors[index] ? 'invalid' : undefined}
+              data-testid="pose-field"
+              aria-label={`pose-${label}`}
+              value={texts[index] ?? ''}
+              key={`${index}:${version}:${binding.version}`}
+              readOnly={binding.readonly}
+              onChange={(event) => {
+                if (binding.readonly) return;
+                const next = [...texts];
+                next[index] = event.target.value;
+                setTexts(next);
+              }}
+              onBlur={() => {
+                if (binding.readonly) return;
+                const text = texts[index] ?? '';
+                data.commitField(index, text);
+                setErrors([...data.errors]);
+                setTexts([...data.fieldTexts]);
+                setVersion((v) => v + 1);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+              }}
+            />
+          </label>
+        ))}
+      </span>
+      <Feedback error={firstError} />
+    </span>
+  );
+}
+
 /** Read-only IR view used by e2e to verify that only valid values are exported. */
 export function CurrentIR({ graph }: { graph: GraphIR | null }) {
   return (
@@ -290,6 +359,9 @@ export function registerControls() {
         }
         if (payload instanceof BooleanControl) {
           return BooleanControlComponent as (props: { data: typeof payload }) => ReactElement;
+        }
+        if (payload instanceof PoseControl) {
+          return PoseControlComponent as (props: { data: typeof payload }) => ReactElement;
         }
         if (payload instanceof ClassicPreset.InputControl) {
           return NumberControlComponent as (props: { data: typeof payload }) => ReactElement;

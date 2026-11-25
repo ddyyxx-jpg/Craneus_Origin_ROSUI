@@ -2,10 +2,11 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M2 完成** —— 画布控件与 ROS 2 参数**双向绑定**跑通（真 rosbridge + 真 rclpy 节点，18 条 Playwright 全绿：13 条 UI + 5 条绑定集成）。
+当前状态：**M3 完成** —— 画布控件与 ROS 2 参数双向绑定跑通，新增 Pose 复杂 DOM 控件与 `double_array` 双向绑定（真 rosbridge + 真 rclpy 节点，21 条 Playwright 全绿：13 条 UI + 5 条绑定集成 + 3 条 M3）。
 
 - UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 2s 内跟着变。
-- 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。
+- 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`、`Pose.pose`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。
+- 工具栏 `+ Pose` 可添加 Pose 节点（默认 5 节点不变，避免既有 e2e 断言失效）。
 - 断线**不锁控件**：停止下发但保留编辑，重连以节点值为准（见 `docs/adr/ADR-006-parameter-events.md` 补记）。
 
 ## 文档入口
@@ -13,7 +14,7 @@ ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点
 | 文件 | 内容 |
 |---|---|
 | [`docs/ROSUI-落地方案.md`](docs/ROSUI-落地方案.md) | 主方案：能力定义、架构、ADR、GraphIR、关键技术点、里程碑、会话拓扑、角色分工、流水线、门禁、风险 |
-| [`docs/backlog.md`](docs/backlog.md) | 20 张可直接建到任务板的卡（T-001..T-020，M0–M2） |
+| [`docs/backlog.md`](docs/backlog.md) | 23 张任务卡（T-001..T-023，M0–M3） |
 | `docs/reviews/` | 评审报告（R 产出） |
 | `docs/feedback/` | 试运行反馈（Q/R 产出） |
 | `docs/handoff/` | 里程碑交接块 |
@@ -34,7 +35,7 @@ corepack pnpm check       # tsc --noEmit ×2 + vitest（IR 5 例）
 
 scripts/ros-up.sh             # 起 rosbridge :9090（无 root，见下）
 scripts/demo-stack.sh         # rosbridge + demo 参数节点一起起（--check 自检读写/校验）
-node node_modules/@playwright/test/cli.js test   # 18 条 e2e（binding 那 5 条会自己拉起 demo 栈）
+node node_modules/@playwright/test/cli.js test   # 21 条 e2e（binding 5 条 + m3 3 条会自己拉起 demo 栈）
 scripts/test-demo-params.sh   # 验证 demo 节点 4 类参数与校验
 ```
 

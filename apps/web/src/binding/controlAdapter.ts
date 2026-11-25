@@ -31,7 +31,11 @@ export function createControlAdapter(options: ControlAdapterOptions): BoundContr
   const originalChange = control.onChange;
   const guardedChange: ControlValueChange = (change) => {
     if (isProgrammaticWrite(control)) return;
-    if (change.valid && typeof change.value !== 'object') {
+    // M3：double_array（pose）是 readonly number[]，不应被当成「非标量对象」过滤掉。
+    // 只排除 null 与普通对象；数组放行。
+    const isPlainObject =
+      typeof change.value === 'object' && change.value !== null && !Array.isArray(change.value);
+    if (change.valid && !isPlainObject) {
       onUserChange(options.nodeType, options.portKey, change.value as ParamValue);
     }
     originalChange?.(change);
@@ -52,8 +56,14 @@ export function createControlAdapter(options: ControlAdapterOptions): BoundContr
         endProgrammaticWrite(control);
       }
       // 程序写值也要更新 IR（last gain / JSON 面板），但不回灌 ROS。
-      const irValue = typeof value === 'object' ? undefined : (value as string | number | boolean);
-      originalChange?.({ value: irValue ?? '', text: String(value), valid: true });
+      // M3：数组是合法 ParamValue，直接传入，而不是降成空字符串。
+      const irValue =
+        Array.isArray(value) && value.every((v) => typeof v === 'number' || typeof v === 'string')
+          ? (value as import('@rosui/ir').ParamValue)
+          : typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+            ? value
+            : '';
+      originalChange?.({ value: irValue, text: JSON.stringify(value), valid: true });
       bumpControlVersion(control);
     },
     setReadonly(readonly: boolean) {
@@ -75,6 +85,15 @@ function applyControlValue(control: RosuiControl, value: ParamValue): void {
       break;
     case 'boolean':
       if (typeof value === 'boolean') control.setValue(value);
+      break;
+    case 'pose':
+      if (
+        Array.isArray(value) &&
+        value.length === 7 &&
+        value.every((v) => typeof v === 'number' && Number.isFinite(v))
+      ) {
+        control.setValue(value as number[]);
+      }
       break;
   }
 }

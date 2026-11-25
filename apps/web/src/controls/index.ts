@@ -3,6 +3,7 @@ export {
   BooleanControlComponent,
   CurrentIR,
   NumberControlComponent,
+  PoseControlComponent,
   SelectControlComponent,
   TextControlComponent,
   findIRValue,

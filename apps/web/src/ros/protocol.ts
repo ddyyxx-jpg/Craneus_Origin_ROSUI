@@ -75,6 +75,12 @@ export function encodeParamValue(value: ParamValue): string {
     // "42" 会被 rclpy 推断为 int；补 .0 保持 double 语义（demo 的 gain 就是 double）。
     return `${value}.0`;
   }
+  // 数值数组同样经 rclpy YAML 推断：整数字面量会被当成 int，mixed int/float 会被当成
+  // STRING（导致 double_array 参数被拒）。每个数值项都补 .0，保持 double_array 语义。
+  // 字符串数组与其他类型原样 JSON.stringify，不影响 string_array 场景。
+  if (Array.isArray(value) && value.every((item): item is number => typeof item === 'number')) {
+    return `[${value.map((item) => (Number.isInteger(item) ? `${item}.0` : String(item))).join(',')}]`;
+  }
   return JSON.stringify(value);
 }
 

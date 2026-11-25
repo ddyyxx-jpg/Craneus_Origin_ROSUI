@@ -77,6 +77,9 @@
 - `corepack pnpm build`、`corepack pnpm check`（含 IR vitest 5 例）、
   `corepack pnpm -w exec vitest --run apps/web/src packages/ir` 全绿；
 - `node node_modules/@playwright/test/cli.js test e2e/perf.spec.ts`：2 条通过；
-- 全量 Playwright：`35 passed (1.5m)`（原 33 条 + 新增 2 条，全绿）。
-  最后一次全量运行中的 perf 采样为 full 368.4 / 16.44ms、placeholder 234.1 / 16.49ms，
+- 全量 Playwright：`35 passed (1.7m)`（原 33 条 + 新增 2 条，全绿）。
+  最后一次全量运行中的 perf 采样为 full 375.1 / 16.19ms、placeholder 241.6 / 16.11ms，
   与独立运行同量级。
+- 期间有一次全量运行出现 2 条 ROS 依赖用例超时（`m3-pose.spec.ts:64` 外部参数 2s 同步窗口、
+  `m4-param-browser.spec.ts:9` 延迟声明参数 20s 可见），均非 LOD 相关；重跑即全绿，
+  判为 ROS 时序抖动，作为剩余风险记录。

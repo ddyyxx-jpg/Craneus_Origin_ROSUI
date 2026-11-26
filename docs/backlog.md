@@ -200,9 +200,9 @@
 - 落地：`apps/web/src/rete/serialize.ts`（`kindForType`/`serializeGraph`/`loadGraph`）、`nodes.ts` 的 `applyParamBinding`、`App.tsx` 保存/加载按钮与动态注册清理、`e2e/save-load.spec.ts`、ADR-007。
 
 ### T-031 LOD 混合渲染与 200 节点压测 ✅ 已完成
-- owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`docs/artifacts/**`
-- 验收：缩放 < 0.35 时节点内容降级为同尺寸占位（控件不渲染），缩放回来恢复；200 节点图的首帧与拖动帧率有可复现的测量脚本与数字（记录到 `docs/reviews/M5-perf.md`）。
-- 落地：`rete/lod.ts`（`useSyncExternalStore` 广播 + 尺寸缓存）、`rete/LodNode.tsx`（占位节点保留 socket、不卸载 NodeView）、`editor.ts` 的 rAF 节流 zoomed → LOD、`e2e/perf.spec.ts`。实测 full 首帧 366ms / placeholder 240ms，拖动均 16.5ms/帧。
+- owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`e2e/lod.spec.ts`、`docs/artifacts/**`
+- 验收：缩放 < 0.32 时节点内容降级为占位（控件不渲染）、> 0.38 恢复，中间区间保持原状态；占位节点**外框尺寸与 full 一致、input/output socket 中心偏移差 ≤2px**（`e2e/lod.spec.ts` 固化）；200 节点混合图（gain/pose/inspector/script + 149 连线）首帧对比为 placeholder < 0.85×full、拖动成本 ≤ full×1.2，数字记录到 `docs/reviews/M5-perf.md`。
+- 落地：`rete/lod.ts`（`useSyncExternalStore` 广播 + 双阈值 hysteresis + 尺寸缓存）、`rete/LodNode.tsx`（占位节点复用 classic 布局类与几何常量、保留 socket、不卸载 NodeView、选中态同步）、`editor.ts` 的 rAF 节流 zoomed → LOD + render/noderesized 尺寸采样、生产 `addNode()` 路径与 DEV `addNodeKind`、`e2e/perf.spec.ts`（默认跳过，`ROSUI_PERF=1` 开启）、`e2e/lod.spec.ts`。实测 full 首帧 743.8ms / placeholder 370.9ms，拖动均 ~16.2ms/帧。
 
 ### T-032 撤销 / 重做 + 复制粘贴 ⏳ 待开始
 - owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`

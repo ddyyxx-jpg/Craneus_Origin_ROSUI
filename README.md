@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M5 进行中（保存/加载 + LOD 已完成）** —— GraphIR 文件存盘/加载（`.rosui.json`，含节点位置、控件值、运行期绑定元数据与连线）与缩放 LOD 混合渲染（<0.35 切占位、200 节点压测首帧 369ms / 16.3ms 帧）都跑通；本分支 40 条 Playwright（38 + perf 2）、`vitest` 43 例。M3 的 Pose 复杂 DOM 控件、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。
+当前状态：**M5 进行中（保存/加载 + LOD 已完成）** —— GraphIR 文件存盘/加载（`.rosui.json`，含节点位置、控件值、运行期绑定元数据与连线）与缩放 LOD 混合渲染（<0.32 切占位、>0.38 恢复、200 节点混合图 + 149 连线压测首帧 full 744ms / placeholder 371ms，拖动 ~16.2ms/帧）都跑通；本分支 43 条 Playwright（41 条默认执行 + perf 2 条显式开启，`e2e/lod.spec.ts` 3 条新增已计入默认），`vitest` 43 例。M3 的 Pose 复杂 DOM 控件、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。
 
 - UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 2s 内跟着变。
 - 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`、`Pose.pose`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。
@@ -29,13 +29,15 @@ ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点
 
 ```bash
 corepack pnpm install     # 本机 PATH 无裸 pnpm，统一用 corepack
-corepack pnpm dev         # 起前端（Vite，默认 5173/5174）
+corepack pnpm dev         # 起前端（Vite，固定 5180）
 corepack pnpm build       # tsc + vite build
 corepack pnpm check       # tsc --noEmit ×2 + vitest（IR 5 例）
+corepack pnpm -w exec vitest --run apps/web/src packages/ir  # 全量单测
 
 scripts/ros-up.sh             # 起 rosbridge :9090（无 root，见下）
 scripts/demo-stack.sh         # rosbridge + demo 参数节点一起起（--check 自检读写/校验）
-node node_modules/@playwright/test/cli.js test   # 本分支 38 条 e2e（当前 worktree 无 perf 2 条；binding/m3 会自己拉起 demo 栈）
+node node_modules/@playwright/test/cli.js test   # 41 条默认 e2e（perf 2 条默认跳过；binding/m3 会自己拉起 demo 栈）
+ROSUI_PERF=1 node node_modules/@playwright/test/cli.js test e2e/perf.spec.ts  # 200 节点混合图压测（需显式开启）
 scripts/test-demo-params.sh   # 验证 demo 节点 4 类参数与校验
 ```
 

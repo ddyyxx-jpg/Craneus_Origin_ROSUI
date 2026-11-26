@@ -1,7 +1,9 @@
 import { useSyncExternalStore } from 'react';
 
-/** 缩放低于该值时，节点切换到占位渲染，避免大量 DOM 控件拖慢交互。 */
-export const LOD_THRESHOLD = 0.35;
+/** 从 full 进入 placeholder 的阈值：缩放小于它才降级。 */
+export const LOD_ENTER_THRESHOLD = 0.32;
+/** 从 placeholder 回到 full 的阈值：必须大于它才升级；两段阈值间保留原状态（hysteresis）。 */
+export const LOD_EXIT_THRESHOLD = 0.38;
 
 /** 当前 LOD 模式。 */
 export type Lod = 'full' | 'placeholder';
@@ -31,9 +33,19 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
-/** 根据当前缩放更新 LOD；仅跨越阈值时通知订阅者，避免每帧 setState。 */
+/**
+ * 根据当前缩放更新 LOD；双阈值去抖，只有真正跨阈值才 notify。
+ * 0.32~0.38 之间保持原状态，避免滚轮停在阈值附近时反复整树卸载/重挂。
+ */
 export function setLodZoom(k: number): void {
-  const next: Lod = k < LOD_THRESHOLD ? 'placeholder' : 'full';
+  const next: Lod =
+    current === 'full'
+      ? k < LOD_ENTER_THRESHOLD
+        ? 'placeholder'
+        : 'full'
+      : k > LOD_EXIT_THRESHOLD
+        ? 'full'
+        : 'placeholder';
   if (next === current) return;
   current = next;
   notify();
@@ -45,6 +57,16 @@ export function captureNodeSizes(
 ): void {
   sizes.clear();
   for (const entry of entries) sizes.set(entry.id, { width: entry.width, height: entry.height });
+}
+
+/**
+ * 补采单个节点的真实尺寸（不清空其它节点缓存）。
+ * 返回值表示尺寸是否变化：full 时变化则需要让 Rete 重算 socket 位置。
+ */
+export function updateNodeSize(id: string, width: number, height: number): boolean {
+  const old = sizes.get(id);
+  sizes.set(id, { width, height });
+  return old?.width !== width || old?.height !== height;
 }
 
 /** 读取占位模式应使用的节点尺寸。 */

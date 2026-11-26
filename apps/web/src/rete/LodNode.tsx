@@ -17,6 +17,7 @@ const RefSocket = ReactPresets.classic.RefSocket as unknown as (props: {
   nodeId: string;
   emit: RenderEmit<ClassicScheme>;
   payload: unknown;
+  'data-testid': string;
 }) => ReactElement;
 
 /** 占位尺寸回退值：实测经典节点 180×119，保证首帧也不塌陷。 */
@@ -29,11 +30,11 @@ function nodeKind(data: NodeData): string {
 }
 
 /**
- * 缩放 <0.35 时的占位节点：保留标题与输入/输出 socket DOM，隐藏真实控件。
+ * 缩放低于占位阈值时的节点：保留标题与输入/输出 socket DOM，隐藏真实控件。
  *
- * 不卸载 Rete 的 NodeView，只切换 React 子树，因此 socket 在
- * SocketsPositionsStorage 中仍唯一，不会触发重复注册的告警，也不会
- * 因控件消失而改变输入端口的 x 坐标。
+ * 不卸载 Rete 的 NodeView，只切 React 子树，因此 socket 在
+ * SocketsPositionsStorage 中仍唯一。占位根节点复用 classic 的
+ * node-shell/node/selected DOM 布局类，socket 几何与 full 模式逐像素一致。
  */
 function PlaceholderNode({
   data,
@@ -43,14 +44,16 @@ function PlaceholderNode({
   emit: RenderEmit<ClassicScheme>;
 }): ReactElement {
   const size = placeholderSize(data.id) ?? FALLBACK_SIZE;
+  const selected = (data as unknown as { selected?: boolean }).selected === true;
   const inputs = Object.entries(data.inputs);
   const outputs = Object.entries(data.outputs);
   return (
     <div
-      className="node-shell node-lod node-lod-placeholder"
+      className={`node-shell node node-lod node-lod-placeholder${selected ? ' selected' : ''}`}
       data-testid="node-lod"
       data-node-id={data.id}
       data-node-kind={nodeKind(data)}
+      data-selected={selected ? 'true' : undefined}
       style={{ width: `${size.width}px`, height: `${size.height}px` }}
     >
       <div className="title" data-testid="title">{data.label}</div>
@@ -65,6 +68,7 @@ function PlaceholderNode({
               nodeId={data.id}
               emit={emit}
               payload={output.socket}
+              data-testid="output-socket"
             />
           </div>
         ) : null,
@@ -79,6 +83,7 @@ function PlaceholderNode({
               nodeId={data.id}
               emit={emit}
               payload={input.socket}
+              data-testid="input-socket"
             />
             <span className="input-title" data-testid="input-title">{input.label}</span>
           </div>

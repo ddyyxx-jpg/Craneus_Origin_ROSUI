@@ -1,9 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { EditorHandle } from '../apps/web/src/rete/editor';
 
-// M5 T-031：纯 UI 压测，不依赖 ROS。每个用例独立页面，避免节点累积。
+// M5 T-031：纯 UI 压测，不依赖 ROS。默认不进全量门禁，需 ROSUI_PERF=1 显式开启。
+// 每个用例独立页面，避免节点累积。
 test.describe.configure({ mode: 'serial' });
-test.setTimeout(120_000);
+test.setTimeout(180_000);
+test.skip(process.env.ROSUI_PERF !== '1', '性能压测默认跳过：ROSUI_PERF=1 开启');
 
 interface PerfSample {
   firstFrameMs: number;
@@ -11,6 +13,8 @@ interface PerfSample {
   dragMaxMs: number;
   placeholderCount: number;
   nodeCount: number;
+  connectionCount: number;
+  kinds: string[];
 }
 
 interface PerfWindow {
@@ -34,7 +38,7 @@ async function measure(page: Page, count: number, placeholder: boolean): Promise
     async ({ count, usePlaceholder }) => {
       const handle = (window as unknown as PerfWindow).__rosui;
       if (!handle) throw new Error('window.__rosui 未挂载');
-      await handle.setZoom(usePlaceholder ? 0.3 : 1);
+      await handle.setZoom(usePlaceholder ? 0.28 : 1);
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await handle.editor.clear();
 
@@ -76,33 +80,40 @@ async function measure(page: Page, count: number, placeholder: boolean): Promise
         dragMaxMs,
         nodeCount: handle.editor.getNodes().length,
         placeholderCount: document.querySelectorAll('[data-testid="node-lod"]').length,
+        connectionCount: handle.editor.getConnections().length,
+        kinds: Array.from(
+          new Set(handle.editor.getNodes().map((node) => (node as { spec?: { type?: string } }).spec?.type ?? '')),
+        ),
       };
     },
     { count, usePlaceholder: placeholder },
   );
 }
 
-test('200 节点 full/placeholder 首帧与拖动帧时间可测', async ({ page }, testInfo) => {
+test('200 节点混合图 full/placeholder 首帧对比与拖动成本', async ({ page }, testInfo) => {
   await ready(page);
 
-  // 首轮（full）实测基线：firstFrameMs 358.9ms，dragAvgMs 16.21ms。
-  // CI 抖动按 3 倍宽阈值断言；placeholder 也必须明显低于该上限。
   const full = await measure(page, 200, false);
   expect(full.nodeCount).toBe(200);
   expect(full.placeholderCount).toBe(0);
-  expect(full.firstFrameMs).toBeLessThan(3 * 358.9);
-  expect(full.dragAvgMs).toBeLessThan(3 * 16.21);
+  // 评审 #6：混合四种节点 + 至少 100 条连线，走生产 addNode() 路径。
+  expect(full.connectionCount).toBeGreaterThanOrEqual(100);
   console.log(`[perf][full] ${JSON.stringify(full)}`);
 
   const placeholder = await measure(page, 200, true);
   expect(placeholder.nodeCount).toBe(200);
   expect(placeholder.placeholderCount).toBe(200);
-  expect(placeholder.firstFrameMs).toBeLessThan(3 * 358.9);
-  expect(placeholder.dragAvgMs).toBeLessThan(3 * 16.21);
+  expect(placeholder.connectionCount).toBeGreaterThanOrEqual(100);
   console.log(`[perf][placeholder] ${JSON.stringify(placeholder)}`);
 
-  await page.screenshot({ path: 'docs/artifacts/m5-perf.png', fullPage: false });
-  await page.screenshot({ path: testInfo.outputPath('m5-perf.png') });
+  // 评审 #5：对比式断言。0.85 基于同机多轮 full 366ms / placeholder 240ms 的
+  // 65.6% 比例留 ~20 个百分点余量；1.2 的拖动上限容忍 ~20% CI 抖动，
+  // 但能抓住“占位反而比 full 慢”的实质性退化。
+  expect(placeholder.firstFrameMs).toBeLessThan(0.85 * full.firstFrameMs);
+  expect(placeholder.dragAvgMs).toBeLessThanOrEqual(full.dragAvgMs * 1.2);
+
+  // 截图只写 Playwright 的 outputPath，不污染仓库；最终产物由维护者手动复制。
+  await page.screenshot({ path: testInfo.outputPath('m5-perf.png'), fullPage: false });
 });
 
 test('LOD 阈值恢复：缩放回来控件重新渲染且 socket 唯一', async ({ page }) => {
@@ -110,10 +121,10 @@ test('LOD 阈值恢复：缩放回来控件重新渲染且 socket 唯一', async
   const zoomed = await page.evaluate(async () => {
     const handle = (window as unknown as PerfWindow).__rosui;
     if (!handle) throw new Error('window.__rosui 未挂载');
-    await handle.setZoom(0.3);
+    await handle.setZoom(0.28);
     return handle.area.area.transform.k;
   });
-  expect(zoomed).toBeCloseTo(0.3);
+  expect(zoomed).toBeCloseTo(0.28);
   await expect(page.locator('[data-testid="node-lod"]')).toHaveCount(5);
   await expect(page.locator('[data-testid="number-control"]')).toHaveCount(0);
 

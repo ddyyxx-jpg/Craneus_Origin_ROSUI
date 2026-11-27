@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GraphIR } from '@rosui/ir';
 import { CurrentIR } from './controls';
 import { createEditor, addNode, connect, toGraphIR, type EditorHandle } from './rete/editor';
-import { loadGraph, serializeGraph } from './rete/serialize';
+import { loadGraph, serializeGraph, type LoadGraphResult } from './rete/serialize';
+import { loadToast } from './loadToast';
 import { createNode, type RosuiNode } from './rete/nodes';
 import type { ParamBindingRef, ParamValue, RosStatus } from './ros';
 import { getSharedClient } from './ros';
@@ -186,6 +187,32 @@ export function App() {
     allUnregisters.current.length = 0;
   }, []);
 
+  /**
+   * M5 二轮 P1-A：注册控件 + 恢复运行期绑定收进同一个函数。
+   * 成功加载与快照回滚都调用，保证 IR 中 mode:'runtime' 的绑定在重建后仍订阅 ROS。
+   * registerDynamic 完成后静态表已就绪；bind() 只登记订阅，未连接 ROS 时不下发值。
+   * 返回未能恢复的绑定数量，由调用方决定是否展示绑定失败提示。
+   */
+  const restoreGraphBindings = useCallback(
+    (result: LoadGraphResult): number => {
+      // 先清掉旧图/失败图残留的注册，再按新节点重建，避免订阅指向已移除的实例。
+      clearDynamicRegistrations();
+      for (const node of result.nodes) registerDynamic(node);
+      let failedBindings = 0;
+      for (const { node, ref, valueType } of result.runtimeBindings) {
+        const portKey = node.spec.inputKey;
+        const expected = controlValueType(node.spec.type, portKey);
+        const ok =
+          expected && typesCompatible(valueType, expected)
+            ? bind(node.spec.type, portKey, ref, valueType, node.id)
+            : false;
+        if (!ok) failedBindings += 1;
+      }
+      return failedBindings;
+    },
+    [bind, clearDynamicRegistrations, registerDynamic],
+  );
+
   const handleSaveGraph = useCallback(() => {
     const editorHandle = handleRef.current;
     if (!editorHandle) return;
@@ -211,39 +238,20 @@ export function App() {
         clearDynamicRegistrations();
         cleared = true;
         const result = await loadGraph(editorHandle, ir);
-        for (const node of result.nodes) registerDynamic(node);
-
-        // M5：mode:'runtime' 且 node 形如 `节点:参数` 的绑定尽力恢复。
-        // registerDynamic 已完成控件注册；bind() 只登记订阅，未连接时不下发值。
-        let failedBindings = 0;
-        for (const { node, ref, valueType } of result.runtimeBindings) {
-          const portKey = node.spec.inputKey;
-          const expected = controlValueType(node.spec.type, portKey);
-          const ok =
-            expected && typesCompatible(valueType, expected)
-              ? bind(node.spec.type, portKey, ref, valueType, node.id)
-              : false;
-          if (!ok) failedBindings += 1;
-        }
+        const failedBindings = restoreGraphBindings(result);
 
         setSelectedPort(null);
         setLastGain(null);
         refresh();
-        if (failedBindings > 0) {
-          setLocalToast(`${failedBindings} 个运行期绑定未恢复`);
-        } else if (result.scriptCodeCount > 0) {
-          setLocalToast('已加载脚本节点，运行前请确认来源');
-        } else {
-          setLocalToast('');
-        }
+        // P2-A：绑定失败与脚本来源提示合并展示，不再互相覆盖。
+        setLocalToast(loadToast(failedBindings, result.scriptCodeCount));
       } catch (error: unknown) {
         if (cleared && restoreSnapshot && before) {
           try {
             // 快照重建走同一个 addNode 管道，但不再次拍快照，避免递归。
-            await loadGraph(editorHandle, before);
-            const rebuilt = editorHandle.editor.getNodes();
-            clearDynamicRegistrations();
-            for (const node of rebuilt) registerDynamic(node);
+            // loadGraph 返回的 result 指向重建后的节点，交给同一个恢复函数重建订阅。
+            const snapshotResult = await loadGraph(editorHandle, before);
+            restoreGraphBindings(snapshotResult);
             setSelectedPort(null);
             setLastGain(null);
             refresh();
@@ -255,12 +263,14 @@ export function App() {
             return;
           }
         }
+        // 回滚本身失败时 toast 保持「画布已重置」兜底；成功回滚时最终 toast 必须是「加载失败：…」，
+        // 不能被「N 个运行期绑定未恢复」覆盖，因此回滚路径不展示绑定失败提示。
         setLocalToast(`加载失败：${error instanceof Error ? error.message : String(error)}`);
         // 校验失败时画布未动，但 graph/selectedPort/lastGain 可能与画布不同步，统一刷新。
         refresh();
       }
     },
-    [bind, clearDynamicRegistrations, refresh, registerDynamic],
+    [clearDynamicRegistrations, refresh, restoreGraphBindings],
   );
 
   const handleLoadGraph = useCallback(

@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M4 完成** —— 画布控件 + 静态/运行时两种参数绑定、参数浏览器、Inspector 节点、节点内 JS（Web Worker 隔离）全部跑通（真 rosbridge + 真 rclpy 节点，31 条 Playwright 全绿；`vitest` 38 例）。M3 的 Pose 复杂 DOM 控件与 `double_array` 双向绑定已并入。
+当前状态：**M5 进行中（保存/加载已完成）** —— 在 M4 基础上加了 GraphIR 文件存盘/加载（`.rosui.json`，含节点位置、控件值、运行期绑定元数据与连线），40 条 Playwright 全绿（本分支；#4 的 42 条默认 + perf 2 条另计）、`vitest` 47 例。M3 的 Pose 复杂 DOM 控件与 `double_array` 双向绑定、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。二轮复核处置：P1-A 加载失败回滚也恢复 runtime 绑定、P2-A 两条加载提示合并、P2-B 新增中途失败回滚 e2e（真 ROS 写回验证）、P2-E webServer 直接 exec vite 使全量 e2e 自然退出。
 
 - UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 2s 内跟着变。
 - 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`、`Pose.pose`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。
@@ -29,13 +29,14 @@ ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点
 
 ```bash
 corepack pnpm install     # 本机 PATH 无裸 pnpm，统一用 corepack
-corepack pnpm dev         # 起前端（Vite，默认 5173/5174）
+corepack pnpm dev         # 起前端（Vite，固定 5180）
 corepack pnpm build       # tsc + vite build
 corepack pnpm check       # tsc --noEmit ×2 + vitest（IR 5 例）
+corepack pnpm -w exec vitest --run apps/web/src packages/ir  # 全量单测（47 例）
 
 scripts/ros-up.sh             # 起 rosbridge :9090（无 root，见下）
 scripts/demo-stack.sh         # rosbridge + demo 参数节点一起起（--check 自检读写/校验）
-node node_modules/@playwright/test/cli.js test   # 21 条 e2e（binding 5 条 + m3 3 条会自己拉起 demo 栈）
+node node_modules/@playwright/test/cli.js test   # 本分支 40 条 e2e（binding/m3 会自己拉起 demo 栈；webServer 直接 exec vite 保证自然退出）
 scripts/test-demo-params.sh   # 验证 demo 节点 4 类参数与校验
 ```
 

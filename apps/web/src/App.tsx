@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GraphIR } from '@rosui/ir';
 import { CurrentIR } from './controls';
 import { createEditor, addNode, connect, toGraphIR, type EditorHandle } from './rete/editor';
+import { loadGraph, serializeGraph, type LoadGraphResult } from './rete/serialize';
+import { loadToast } from './loadToast';
 import { createNode, type RosuiNode } from './rete/nodes';
 import type { ParamBindingRef, ParamValue, RosStatus } from './ros';
 import { getSharedClient } from './ros';
@@ -32,11 +34,11 @@ export function App() {
   const [url, setUrl] = useState('ws://127.0.0.1:9090');
   const [selectedPort, setSelectedPort] = useState<SelectedPort | null>(null);
   const [localToast, setLocalToast] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const binding = useParamBinding();
-  // M3：动态添加的节点也要接进绑定层；unregister 在画布卸载时统一清理。
-  const poseUnregisters = useRef<Array<() => void>>([]);
-  const dynamicUnregisters = useRef<Array<() => void>>([]);
+  // M3/M5：所有节点的 unregister 都收进 allUnregisters，加载前统一清空，避免旧订阅泄漏。
+  const allUnregisters = useRef<Array<() => void>>([]);
 
   const refresh = useCallback(() => {
     setGraph(snapshot(handleRef.current));
@@ -76,7 +78,6 @@ export function App() {
 
     let disposed = false;
     let handle: EditorHandle | null = null;
-    const unregisters: Array<() => void> = [];
 
     void createEditor(container, selectNode)
       .then(async (created) => {
@@ -111,7 +112,7 @@ export function App() {
             control: node.control,
             onUserChange: handleUserChange,
           });
-          unregisters.push(
+          allUnregisters.current.push(
             binding.register(
               node.spec.type,
               node.spec.inputKey,
@@ -138,12 +139,8 @@ export function App() {
 
     return () => {
       disposed = true;
-      for (const unregister of unregisters) unregister();
-      unregisters.length = 0;
-      for (const unregister of poseUnregisters.current) unregister();
-      poseUnregisters.current.length = 0;
-      for (const unregister of dynamicUnregisters.current) unregister();
-      dynamicUnregisters.current.length = 0;
+      for (const unregister of allUnregisters.current) unregister();
+      allUnregisters.current.length = 0;
       handle?.destroy();
       handleRef.current = null;
     };
@@ -156,6 +153,8 @@ export function App() {
   /** 动态新增的节点也要注册进绑定层，否则参数浏览器能「绑定成功」但实际没有订阅。 */
   const registerDynamic = useCallback(
     (node: RosuiNode): void => {
+      // inspector 等节点没有内联控件，不能把 undefined 交给 WeakMap 适配器。
+      if (!node.control || !node.control.kind) return;
       const adapter = createControlAdapter({
         nodeType: node.spec.type,
         portKey: node.spec.inputKey,
@@ -163,7 +162,7 @@ export function App() {
         control: node.control,
         onUserChange: handleUserChange,
       });
-      dynamicUnregisters.current.push(
+      allUnregisters.current.push(
         binding.register(
           node.spec.type,
           node.spec.inputKey,
@@ -179,7 +178,131 @@ export function App() {
         ),
       );
     },
-    [binding, handleUserChange, refresh],
+    [binding.register, handleUserChange, refresh],
+  );
+
+  /** 清空全部绑定订阅（初始 5 节点 + 动态节点）：加载前调用，避免旧节点的 entry/timer 泄漏。 */
+  const clearDynamicRegistrations = useCallback(() => {
+    for (const unregister of allUnregisters.current) unregister();
+    allUnregisters.current.length = 0;
+  }, []);
+
+  /**
+   * M5 二轮 P1-A：注册控件 + 恢复运行期绑定收进同一个函数。
+   * 成功加载与快照回滚都调用，保证 IR 中 mode:'runtime' 的绑定在重建后仍订阅 ROS。
+   * registerDynamic 完成后静态表已就绪；bind() 只登记订阅，未连接 ROS 时不下发值。
+   * 返回未能恢复的绑定数量，由调用方决定是否展示绑定失败提示。
+   */
+  const restoreGraphBindings = useCallback(
+    (result: LoadGraphResult): number => {
+      // 先清掉旧图/失败图残留的注册，再按新节点重建，避免订阅指向已移除的实例。
+      clearDynamicRegistrations();
+      for (const node of result.nodes) registerDynamic(node);
+      let failedBindings = 0;
+      for (const { node, ref, valueType } of result.runtimeBindings) {
+        const portKey = node.spec.inputKey;
+        const expected = controlValueType(node.spec.type, portKey);
+        const ok =
+          expected && typesCompatible(valueType, expected)
+            ? bind(node.spec.type, portKey, ref, valueType, node.id)
+            : false;
+        if (!ok) failedBindings += 1;
+      }
+      return failedBindings;
+    },
+    [bind, clearDynamicRegistrations, registerDynamic],
+  );
+
+  const handleSaveGraph = useCallback(() => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const json = JSON.stringify(toGraphIR(editorHandle), null, 2);
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'rosui-graph.rosui.json';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, []);
+
+  // 加载主流程：JSON → IR → 画布。
+  // restoreSnapshot: clear() 前拍快照，任何中途失败都用 serializeGraph 快照重建旧图。
+  const loadGraphInternal = useCallback(
+    async (editorHandle: EditorHandle, ir: unknown, restoreSnapshot: boolean): Promise<void> => {
+      const before = restoreSnapshot ? serializeGraph(editorHandle) : null;
+      let cleared = false;
+      try {
+        // 先停掉旧节点的所有订阅，再清画布；新节点按恢复后的类型重新注册。
+        clearDynamicRegistrations();
+        cleared = true;
+        const result = await loadGraph(editorHandle, ir);
+        const failedBindings = restoreGraphBindings(result);
+
+        setSelectedPort(null);
+        setLastGain(null);
+        refresh();
+        // P2-A：绑定失败与脚本来源提示合并展示，不再互相覆盖。
+        setLocalToast(loadToast(failedBindings, result.scriptCodeCount));
+      } catch (error: unknown) {
+        if (cleared && restoreSnapshot && before) {
+          try {
+            // 快照重建走同一个 addNode 管道，但不再次拍快照，避免递归。
+            // loadGraph 返回的 result 指向重建后的节点，交给同一个恢复函数重建订阅。
+            const snapshotResult = await loadGraph(editorHandle, before);
+            restoreGraphBindings(snapshotResult);
+            setSelectedPort(null);
+            setLastGain(null);
+            refresh();
+          } catch {
+            setLocalToast('加载失败：画布已重置，请用备份恢复');
+            setGraph(null);
+            setSelectedPort(null);
+            setLastGain(null);
+            return;
+          }
+        }
+        // 回滚本身失败时 toast 保持「画布已重置」兜底；成功回滚时最终 toast 必须是「加载失败：…」，
+        // 不能被「N 个运行期绑定未恢复」覆盖，因此回滚路径不展示绑定失败提示。
+        setLocalToast(`加载失败：${error instanceof Error ? error.message : String(error)}`);
+        // 校验失败时画布未动，但 graph/selectedPort/lastGain 可能与画布不同步，统一刷新。
+        refresh();
+      }
+    },
+    [clearDynamicRegistrations, refresh, restoreGraphBindings],
+  );
+
+  const handleLoadGraph = useCallback(
+    async (file: File): Promise<void> => {
+      const editorHandle = handleRef.current;
+      if (!editorHandle) return;
+      try {
+        // 扩展名校验按用户选中的文件名做；Playwright 可能传入无扩展名的下载临时文件，
+        // 此时由后续 JSON.parse + parseGraph 做内容校验，不靠文件名放行/拒绝。
+        const name = file.name.toLowerCase();
+        if (name.includes('.') && !name.endsWith('.json')) {
+          setLocalToast('加载失败：仅支持 .json / .rosui.json 文件');
+          return;
+        }
+        if (file.size > 8 * 1024 * 1024) {
+          setLocalToast('加载失败：文件超过 8MB');
+          return;
+        }
+        const text = await file.text();
+        let ir: unknown;
+        try {
+          ir = JSON.parse(text);
+        } catch {
+          setLocalToast('加载失败：文件不是合法 JSON');
+          return;
+        }
+        await loadGraphInternal(editorHandle, ir, true);
+      } catch (error: unknown) {
+        setLocalToast(`加载失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    [loadGraphInternal],
   );
 
   const handleBind = useCallback(
@@ -282,7 +405,7 @@ export function App() {
               control: node.control,
               onUserChange: handleUserChange,
             });
-            poseUnregisters.current.push(
+            allUnregisters.current.push(
               binding.register(
                 'Pose',
                 'pose',
@@ -328,6 +451,34 @@ export function App() {
         >
           + Script
         </button>
+        <button
+          type="button"
+          data-testid="save-graph"
+          disabled={!ready}
+          onClick={handleSaveGraph}
+        >
+          保存图
+        </button>
+        <button
+          type="button"
+          data-testid="load-graph"
+          disabled={!ready}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          加载图
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="graph-file-input"
+          data-testid="load-graph-input"
+          accept=".json,.rosui.json,application/json"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleLoadGraph(file);
+            event.target.value = '';
+          }}
+        />
       </header>
       {binding.toast || localToast ? (
         <div className="ros-toast" data-testid="ros-toast" role="alert">

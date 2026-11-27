@@ -200,9 +200,11 @@
 - 落地：`apps/web/src/rete/serialize.ts`（`kindForType`/`serializeGraph`/`loadGraph`）、`nodes.ts` 的 `applyParamBinding`、`App.tsx` 保存/加载按钮与动态注册清理、`e2e/save-load.spec.ts`、ADR-007。
 - 二轮评审处置（PR #3 R2）：P1-A `restoreGraphBindings(result)` 让成功/回滚路径都 `clearDynamicRegistrations()` → `registerDynamic()` → 逐条 `bind()`；P2-A `loadToast(failedBindings, scriptCodeCount)` 合并「N 个运行期绑定未恢复」与「已加载脚本节点，运行前请确认来源」；P2-B 新增 `e2e/save-load-rollback.spec.ts`（DEV 钩子注入 `addConnection` 一次抛错 → 快照回滚，真 ROS 断言回滚后改 3.3 写回）；P2-E `playwright.config.ts` webServer 改 `cd apps/web && exec node ...vite.js`，避免 pnpm/sh PGID 分裂导致全量 e2e 后 CLI 不退出。逐条证据见 `docs/reviews/M5-review-round2.md`。
 
-### T-031 LOD 混合渲染与 200 节点压测 ⏳ 待开始
-- owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`docs/artifacts/**`
-- 验收：缩放 < 0.35 时节点内容降级为同尺寸占位（控件不渲染），缩放回来恢复；200 节点图的首帧与拖动帧率有可复现的测量脚本与数字（记录到 `docs/reviews/M5-perf.md`）。
+### T-031 LOD 混合渲染与 200 节点压测 ✅ 已完成
+- owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`e2e/lod.spec.ts`、`docs/artifacts/**`
+- 验收：缩放 < 0.32 时节点内容降级为占位（控件不渲染）、> 0.38 恢复，中间区间保持原状态；占位节点**外框尺寸与 full 一致、input/output socket 中心偏移差 ≤2px**（`e2e/lod.spec.ts` 固化）；200 节点混合图（gain/pose/inspector/script + 149 连线）首帧对比为 placeholder < 0.85×full、拖动成本 ≤ full×1.2，数字记录到 `docs/reviews/M5-perf.md`。
+- 落地：`rete/lod.ts`（`useSyncExternalStore` 广播 + 双阈值 hysteresis + 尺寸缓存）、`rete/LodNode.tsx`（占位节点复用 classic 布局类与几何常量、保留 socket、不卸载 NodeView、选中态同步）、`editor.ts` 的 rAF 节流 zoomed → LOD + render/noderesized 尺寸采样、生产 `addNode()` 路径与 DEV `addNodeKind`、`e2e/perf.spec.ts`（默认跳过，`ROSUI_PERF=1` 开启）、`e2e/lod.spec.ts`。实测 full 首帧 743.8ms / placeholder 370.9ms，拖动均 ~16.2ms/帧。
+- 二轮评审处置（PR #4 R2）：P1-B placeholder 不再回写尺寸缓存 + `TYPE_SIZES` 按类型兜底（Pose 180×144 等）；P2-C 真实点击 `nodepicked` → DOM `selected`/`data-selected`，不依赖 `node.selected`；P2-D perf 拖动改 `performance.now()` 包裹 `area.translate` 的同步工作量；P2-E `playwright.config.ts` webServer 改 `cd apps/web && exec node ...vite.js`，避免 pnpm/sh PGID 分裂导致全量 e2e 后 CLI 不退出。
 
 ### T-032 撤销 / 重做 + 复制粘贴 ⏳ 待开始
 - owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`

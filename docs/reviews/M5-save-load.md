@@ -59,3 +59,11 @@ playwright: m3-pose + save-load + m4-runtime-binding + 3 条动态探针 # 13 pa
 | 10 P2 | 已修：README 数字与 backlog 验收口径按实测更新 | 本分支全量 38 条（#4 perf 2 条另计） |
 
 二轮门禁：`build` 0、`check` 0、`vitest` 43 passed、`playwright` 38 passed。
+
+## 二轮处置（review-round2：P1-A / P2-A / P2-B）
+
+| # | 判定 | 证据 |
+|---|---|---|
+| P1-A 快照回滚未恢复 runtime 绑定 | 已修：新增 `restoreGraphBindings(result)`（`apps/web/src/App.tsx`），先 `clearDynamicRegistrations()` 清残留，再 `registerDynamic()` 注册控件并显式 `bind(type, portKey, ref, valueType, id)`；成功路径与回滚路径都调用。回滚直接复用 `loadGraph(editorHandle, before)` 返回的结果（节点即重建后的实例），不再手拼绑定表。回滚成功时最终 toast 仍为「加载失败：…」，绑定失败提示只在成功路径出现；`setSelectedPort(null)` / `setLastGain(null)` / `refresh()` 与「画布已重置」兜底保留 | `e2e/save-load-rollback.spec.ts` 真 ROS 用例「中途加载失败回滚后：runtime 绑定改值仍能写进 ROS」：回滚后改控件 3.3，`ros2 param get /rosui_demo gain` 为 3.3 |
+| P2-A 脚本来源提示被绑定失败覆盖 | 已修：纯函数 `loadToast(failedBindings, scriptCodeCount)`（`apps/web/src/loadToast.ts`），两者并存时合并为「N 个运行期绑定未恢复；已加载脚本节点，运行前请确认来源」，只有一个时只显示对应提示，都没有时清空 | `apps/web/src/loadToast.test.ts` 4 例覆盖四种组合；`App.tsx` 成功路径统一调用 `setLocalToast(loadToast(...))` |
+| P2-B 缺「schema 合法但加载中途抛错 → 快照回滚」e2e | 已修：新增 `e2e/save-load-rollback.spec.ts`（真 ROS 栈）。走真实 `load-graph-input` 加载合法 IR，用 DEV 钩子让 `editor.addConnection` 抛一次错。一次性探针实测：抛错瞬间画布只剩新图 2 节点 `g1,t1`（证明 `clear()` 已发生），toast 为 `加载失败：probe: addConnection failed once`，最终画布 5 节点、IR version 1。正式用例断言：toast 含「加载失败」、节点数/IR 与快照一致、Inspector 面板可见不崩；真 ROS 用例另断言回滚后 runtime 改值写入 ROS | 探针输出 `{"toast":"加载失败：probe: addConnection failed once","nodeCount":5,"irVersion":true,"evidence":"{\"nodesAtThrow\":2,\"ids\":[\"g1\",\"t1\"]}"}`；`node node_modules/@playwright/test/cli.js test e2e/save-load-rollback.spec.ts` 2 passed |

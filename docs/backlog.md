@@ -198,6 +198,7 @@
 - owner: D ｜ scope: `apps/web/src/rete/serialize.ts`、`apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`、`e2e/save-load.spec.ts`
 - 验收：工具栏「保存」下载 GraphIR v1（节点/位置/控件值/绑定模式/连线）；「加载」经 `parseGraph` 校验后还原画布并可继续编辑；非法文件 toast 报错且不破坏当前画布；e2e 覆盖「建图→保存→刷新→加载→值/连线一致」。已知限制：Script 的 `x` 只恢复 `code`（M5 验收按此口径）。
 - 落地：`apps/web/src/rete/serialize.ts`（`kindForType`/`serializeGraph`/`loadGraph`）、`nodes.ts` 的 `applyParamBinding`、`App.tsx` 保存/加载按钮与动态注册清理、`e2e/save-load.spec.ts`、ADR-007。
+- 二轮评审处置（PR #3 R2）：P1-A `restoreGraphBindings(result)` 让成功/回滚路径都 `clearDynamicRegistrations()` → `registerDynamic()` → 逐条 `bind()`；P2-A `loadToast(failedBindings, scriptCodeCount)` 合并「N 个运行期绑定未恢复」与「已加载脚本节点，运行前请确认来源」；P2-B 新增 `e2e/save-load-rollback.spec.ts`（DEV 钩子注入 `addConnection` 一次抛错 → 快照回滚，真 ROS 断言回滚后改 3.3 写回）；P2-E `playwright.config.ts` webServer 改 `cd apps/web && exec node ...vite.js`，避免 pnpm/sh PGID 分裂导致全量 e2e 后 CLI 不退出。逐条证据见 `docs/reviews/M5-review-round2.md`。
 
 ### T-031 LOD 混合渲染与 200 节点压测 ✅ 已完成
 - owner: C ｜ scope: `apps/web/src/rete/**`、`e2e/perf.spec.ts`、`e2e/lod.spec.ts`、`docs/artifacts/**`

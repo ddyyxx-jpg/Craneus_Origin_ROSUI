@@ -252,7 +252,7 @@ describe('ParamBindingController', () => {
     await flush();
     expect(f.setCalls).toEqual([{ name: '/rosui_demo:gain', value: 42 }]);
     expect(c.values.at(-1)).toEqual({ value: 1, origin: 'rollback' });
-    expect(errors).toEqual(['gain 必须在 [0.0, 10.0]']);
+    expect(errors).toEqual(['写入被拒：Gain.gain gain 必须在 [0.0, 10.0]']);
     controller.dispose();
   });
 

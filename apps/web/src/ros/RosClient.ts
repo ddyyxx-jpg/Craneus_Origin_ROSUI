@@ -117,6 +117,15 @@ export class RosClientImpl implements RosClient {
     await this.openConnection(false);
   }
 
+  /** 连接断开时立刻拒绝待回包调用，避免它们挂到 connectTimeoutMs 才误报「超时」。 */
+  private rejectPendingCalls(message: string): void {
+    for (const [id, pending] of this.pendingCalls) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(message));
+      this.pendingCalls.delete(id);
+    }
+  }
+
   close(): void {
     this.intentionalClose = true;
     if (this.retryTimer) {
@@ -124,11 +133,7 @@ export class RosClientImpl implements RosClient {
       this.retryTimer = undefined;
     }
     this.generation += 1; // 丢弃旧连接的一切回调。
-    for (const [id, pending] of this.pendingCalls) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error('RosClient closed'));
-      this.pendingCalls.delete(id);
-    }
+    this.rejectPendingCalls('RosClient closed');
     const transport = this.transport;
     this.transport = undefined;
     try {
@@ -181,16 +186,18 @@ export class RosClientImpl implements RosClient {
   private waitForOpen(transport: RosTransport, generation: number): Promise<void> {
     if (transport.isOpen()) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         reject(new Error(`连接 ${this.url} 超时 (${this.connectTimeoutMs}ms)`));
       }, this.connectTimeoutMs);
-      const onOpen = (): void => resolve();
-      const onError = (event: unknown): void => {
-        reject(new Error(`连接 ${this.url} 失败: ${describeError(event)}`));
+      const settle = (done: () => void): void => {
+        clearTimeout(timer);
+        done();
       };
-      transport.on('open', onOpen);
-      transport.on('error', onError);
-      // 过期 listener 由 generation 守卫拦截；这里只忽略 resolved 后的重复事件。
+      transport.on('open', () => settle(() => resolve()));
+      transport.on('error', (event: unknown) =>
+        settle(() => reject(new Error(`连接 ${this.url} 失败: ${describeError(event)}`))),
+      );
+      // 过期 transport 由 openConnection 的 generation 检查关闭；这里只清理超时 timer。
       void generation;
     });
   }
@@ -216,6 +223,10 @@ export class RosClientImpl implements RosClient {
       if (generation !== this.generation) return;
       this.handleMessage(message);
     });
+    // 生产路径：roslib 在 WebSocket onclose 时 emit('close')。不接上重连路径的话，
+    // 服务端被杀后页面会一直停在 stale connected，再也收不到参数事件（AC-4）。
+    // 主动 close() 会先递增 generation 并置 intentionalClose，下面的守卫会忽略该回调。
+    transport.on('close', () => this.handleTransportClose(generation));
   }
 
   private handleMessage(message: RosbridgeMessage): void {
@@ -339,10 +350,11 @@ export class RosClientImpl implements RosClient {
     return () => this.allEventListeners.delete(cb);
   }
 
-  /** 测试用：模拟 transport 断线，走标准重连路径（生成新代际号）。 */
+  /** transport 的 close 事件统一入口：丢弃旧连接并走标准重连路径（也可由测试直接调用）。 */
   handleTransportClose(generation: number): void {
     if (generation !== this.generation) return;
     this.transport = undefined;
+    this.rejectPendingCalls('RosClient 连接断开');
     this.scheduleReconnect(generation);
   }
 }

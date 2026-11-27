@@ -11,6 +11,7 @@ import { createControlAdapter } from './binding/controlAdapter';
 import { useParamBinding } from './binding/useParamBinding';
 import { controlValueType, typesCompatible, type BindingValueType } from './binding/bindings';
 import { ParamBrowser, type SelectedPort } from './ParamBrowser';
+import { formatFailure, type FailureInput } from './toast';
 
 function snapshot(handle: EditorHandle | null): GraphIR | null {
   return handle ? toGraphIR(handle) : null;
@@ -35,6 +36,11 @@ export function App() {
   const [selectedPort, setSelectedPort] = useState<SelectedPort | null>(null);
   const [localToast, setLocalToast] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // M5：错误提示统一经此出口，失败类传 FailureInput，成功/清空类直接传字符串。
+  const pushToast = useCallback((message: FailureInput | string): void => {
+    setLocalToast(typeof message === 'string' ? message : formatFailure(message));
+  }, []);
 
   const binding = useParamBinding();
   // M3/M5：所有节点的 unregister 都收进 allUnregisters，加载前统一清空，避免旧订阅泄漏。
@@ -244,7 +250,7 @@ export function App() {
         setLastGain(null);
         refresh();
         // P2-A：绑定失败与脚本来源提示合并展示，不再互相覆盖。
-        setLocalToast(loadToast(failedBindings, result.scriptCodeCount));
+        pushToast(loadToast(failedBindings, result.scriptCodeCount));
       } catch (error: unknown) {
         if (cleared && restoreSnapshot && before) {
           try {
@@ -256,7 +262,7 @@ export function App() {
             setLastGain(null);
             refresh();
           } catch {
-            setLocalToast('加载失败：画布已重置，请用备份恢复');
+            pushToast({ kind: 'load', reason: '画布已重置，请用备份恢复' });
             setGraph(null);
             setSelectedPort(null);
             setLastGain(null);
@@ -265,12 +271,12 @@ export function App() {
         }
         // 回滚本身失败时 toast 保持「画布已重置」兜底；成功回滚时最终 toast 必须是「加载失败：…」，
         // 不能被「N 个运行期绑定未恢复」覆盖，因此回滚路径不展示绑定失败提示。
-        setLocalToast(`加载失败：${error instanceof Error ? error.message : String(error)}`);
+        pushToast({ kind: 'load', reason: error instanceof Error ? error.message : String(error) });
         // 校验失败时画布未动，但 graph/selectedPort/lastGain 可能与画布不同步，统一刷新。
         refresh();
       }
     },
-    [clearDynamicRegistrations, refresh, restoreGraphBindings],
+    [clearDynamicRegistrations, refresh, restoreGraphBindings, pushToast],
   );
 
   const handleLoadGraph = useCallback(
@@ -282,11 +288,11 @@ export function App() {
         // 此时由后续 JSON.parse + parseGraph 做内容校验，不靠文件名放行/拒绝。
         const name = file.name.toLowerCase();
         if (name.includes('.') && !name.endsWith('.json')) {
-          setLocalToast('加载失败：仅支持 .json / .rosui.json 文件');
+          pushToast({ kind: 'load', reason: '仅支持 .json / .rosui.json 文件' });
           return;
         }
         if (file.size > 8 * 1024 * 1024) {
-          setLocalToast('加载失败：文件超过 8MB');
+          pushToast({ kind: 'load', reason: '文件超过 8MB' });
           return;
         }
         const text = await file.text();
@@ -294,15 +300,15 @@ export function App() {
         try {
           ir = JSON.parse(text);
         } catch {
-          setLocalToast('加载失败：文件不是合法 JSON');
+          pushToast({ kind: 'load', reason: '文件不是合法 JSON' });
           return;
         }
         await loadGraphInternal(editorHandle, ir, true);
       } catch (error: unknown) {
-        setLocalToast(`加载失败：${error instanceof Error ? error.message : String(error)}`);
+        pushToast({ kind: 'load', reason: error instanceof Error ? error.message : String(error) });
       }
     },
-    [loadGraphInternal],
+    [loadGraphInternal, pushToast],
   );
 
   const handleBind = useCallback(
@@ -310,14 +316,22 @@ export function App() {
       if (!selectedPort) return;
       const expected = controlValueType(selectedPort.nodeType, selectedPort.portKey);
       if (!typesCompatible(valueType, expected)) {
-        setLocalToast(`${selectedPort.nodeType}.${selectedPort.portKey} 控件不接受 ${valueType} 类型参数`);
+        pushToast({
+          kind: 'type',
+          param: `${selectedPort.nodeType}.${selectedPort.portKey}`,
+          reason: `控件不接受 ${valueType} 类型参数`,
+        });
         return;
       }
       const ok = bind(selectedPort.nodeType, selectedPort.portKey, ref, valueType, selectedPort.instanceId);
-      setLocalToast(ok ? '' : `${selectedPort.nodeType}.${selectedPort.portKey} 未注册到绑定层，绑定已回滚`);
+      pushToast(
+        ok
+          ? ''
+          : { kind: 'bind', param: `${selectedPort.nodeType}.${selectedPort.portKey}`, reason: '未注册到绑定层，绑定已回滚' },
+      );
       refresh();
     },
-    [bind, selectedPort, refresh],
+    [bind, selectedPort, refresh, pushToast],
   );
   const handleUnbind = useCallback(
     () => {
@@ -327,9 +341,10 @@ export function App() {
     },
     [unbind, selectedPort, refresh],
   );
-  const handleTypeReject = useCallback((reason: string) => {
-    setLocalToast(reason);
-  }, []);
+  const handleTypeReject = useCallback(
+    (reason: string, param?: string) => pushToast({ kind: 'validate', param, reason }),
+    [pushToast],
+  );
 
   return (
     <div className="app">
@@ -367,7 +382,12 @@ export function App() {
         >
           断开
         </button>
-        <span className={statusClass} data-testid="ros-status" data-status={binding.status}>
+        <span
+          className={statusClass}
+          data-testid="ros-status"
+          data-status={binding.status}
+          data-detail={`${binding.status}:${binding.statusDetail}`}
+        >
           {STATUS_TEXT[binding.status]}
         </span>
         <button

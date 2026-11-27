@@ -50,6 +50,12 @@ class FakeTransport implements RosTransport {
   }
 }
 
+function requireTransport(instances: FakeTransport[], index: number): FakeTransport {
+  const transport = instances[index];
+  if (!transport) throw new Error(`测试缺少第 ${index + 1} 个 FakeTransport`);
+  return transport;
+}
+
 function setup() {
   const instances: FakeTransport[] = [];
   const factory: RosTransportFactory = async () => {
@@ -93,7 +99,7 @@ describe('RosClientImpl', () => {
     const { client, instances } = setup();
     await client.connect();
     const pending = client.getParamNames();
-    const t = instances[0]!;
+    const t = requireTransport(instances, 0);
     t.reply(String(t.lastCall('/rosapi/get_param_names').id), {
       names: ['/rosui_demo:gain', '/rosui_demo:enabled'],
     });
@@ -104,7 +110,7 @@ describe('RosClientImpl', () => {
   it('getParam 成功与失败（reason 抛错）', async () => {
     const { client, instances } = setup();
     await client.connect();
-    const t = instances[0]!;
+    const t = requireTransport(instances, 0);
     const ref = { node: '/rosui_demo', param: 'gain' };
 
     const ok = client.getParam(ref);
@@ -130,7 +136,7 @@ describe('RosClientImpl', () => {
   it('setParam 成功与拒绝（reason 透传，整数补 .0 保持 double）', async () => {
     const { client, instances } = setup();
     await client.connect();
-    const t = instances[0]!;
+    const t = requireTransport(instances, 0);
     const ref = { node: '/rosui_demo', param: 'gain' };
 
     const ok = client.setParam(ref, 3.5);
@@ -161,7 +167,7 @@ describe('RosClientImpl', () => {
   it('parameter_events 的 new_parameters / changed_parameters 都推送给按 ref 过滤的订阅', async () => {
     const { client, instances } = setup();
     await client.connect();
-    const t = instances[0]!;
+    const t = requireTransport(instances, 0);
     const gain: number[] = [];
     const all: string[] = [];
     const offGain = client.subscribeParam({ node: '/rosui_demo', param: 'gain' }, (v) => {
@@ -199,7 +205,7 @@ describe('RosClientImpl', () => {
       client.onStatus((s, detail) => statuses.push(`${s}:${detail ?? ''}`));
 
       await client.connect();
-      const old = instances[0]!;
+      const old = requireTransport(instances, 0);
       const values: number[] = [];
       client.subscribeParam({ node: '/rosui_demo', param: 'gain' }, (v) => values.push(Number(v)));
 
@@ -208,7 +214,7 @@ describe('RosClientImpl', () => {
       expect(client.status).toBe('disconnected');
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(0);
-      const fresh = instances[1]!;
+      const fresh = requireTransport(instances, 1);
       expect(fresh).toBeDefined();
       expect(client.status).toBe('connected');
       const refreshCall = fresh.sent.find(
@@ -228,6 +234,49 @@ describe('RosClientImpl', () => {
       expect(values).toEqual([7]);
       expect(statuses).toContain('connected:reconnected');
       client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('transport 的 close 事件走标准重连；主动 close 与旧代际事件不误重连', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, instances } = setup();
+      const statuses: string[] = [];
+      client.onStatus((s, detail) => statuses.push(`${s}:${detail ?? ''}`));
+      await client.connect();
+      const first = requireTransport(instances, 0);
+      expect(client.status).toBe('connected');
+      expect(first.listeners.get('close')?.size).toBe(1);
+
+      // 生产路径：roslib 在 socket.onclose 时 emit('close')，必须自动进入重连。
+      const stale = client.getParam({ node: '/rosui_demo', param: 'gain' });
+      const staleFailure = expect(stale).rejects.toThrow('RosClient 连接断开');
+      first.emit('close', { code: 1006 });
+      await staleFailure;
+      expect(client.status).toBe('disconnected');
+      expect(statuses).toContain('disconnected:connection lost, retrying');
+
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(instances).toHaveLength(2);
+      expect(client.status).toBe('connected');
+      expect(statuses).toContain('connected:reconnected');
+
+      // 旧连接迟到的 close：generation 已推进，必须丢弃。
+      first.emit('close', { code: 1006 });
+      expect(instances).toHaveLength(2);
+      expect(client.status).toBe('connected');
+
+      // 主动 close：generation 再推进 + intentionalClose，不能触发重连。
+      const second = requireTransport(instances, 1);
+      client.close();
+      second.emit('close', { code: 1000 });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(instances).toHaveLength(2);
+      expect(client.status).toBe('disconnected');
+      expect(statuses.at(-1)).toBe('disconnected:closed');
     } finally {
       vi.useRealTimers();
     }

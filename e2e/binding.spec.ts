@@ -60,10 +60,10 @@ test('越界值被本地校验拦下：不发 ROS、不弹 toast（服务端拒�
   expect(ros2('ros2 param get /rosui_demo gain')).toMatch(/value is: 4(\.0)?$/);
 });
 
-test('外部改参数 → 控件 2 秒内跟着变', async ({ page }) => {
+test('外部改参数 → 控件 1 秒内跟着变', async ({ page }) => {
   await connect(page);
   ros2('ros2 param set /rosui_demo gain 6.25');
-  await expect(gainControl(page)).toHaveValue('6.25', { timeout: 5_000 });
+  await expect(gainControl(page)).toHaveValue('6.25', { timeout: 1_000 });
 });
 
 test('断开后不锁死控件：仍可编辑，且不再下发', async ({ page }) => {

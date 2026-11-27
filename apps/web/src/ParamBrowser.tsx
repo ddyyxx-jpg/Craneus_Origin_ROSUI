@@ -41,7 +41,7 @@ export function ParamBrowser({
   selected: SelectedPort | null;
   onBind: (ref: ParamBindingRef, valueType: BindingValueType) => void;
   onUnbind: (ref: ParamBindingRef) => void;
-  onTypeReject: (reason: string) => void;
+  onTypeReject: (reason: string, param?: string) => void;
 }) {
   const [filter, setFilter] = useState('');
   const [rows, setRows] = useState<ParamRow[]>([]);
@@ -301,7 +301,7 @@ export function ParamBrowser({
                           }
                           const valueType = bindingTypeFromRos(row.type);
                           if (!valueType) {
-                            onTypeReject(`不支持的参数类型：${row.type}`);
+                            onTypeReject(`不支持的参数类型：${row.type}`, row.name);
                             return;
                           }
                           onBind(row.ref, valueType);

@@ -61,12 +61,12 @@ test('改 x 字段为 4.5 → ROS 参数变成 4.5', async ({ page }) => {
   await expect(page.getByTestId('ros-toast')).toHaveCount(0);
 });
 
-test('外部 ros2 param set → UI 2 秒内同步', async ({ page }) => {
+test('外部 ros2 param set → UI 1 秒内同步', async ({ page }) => {
   ros2('ros2 param set /rosui_demo pose "[1.0,2.0,3.0,0.0,0.0,0.0,1.0]"');
   await connectAndAddPose(page);
   ros2('ros2 param set /rosui_demo pose "[2.0,2.0,2.0,0.0,0.0,0.0,1.0]"');
-  await expect(page.getByTestId('pose-field').nth(0)).toHaveValue('2', { timeout: 2_000 });
-  await expect(page.getByTestId('pose-field').nth(2)).toHaveValue('2', { timeout: 2_000 });
+  await expect(page.getByTestId('pose-field').nth(0)).toHaveValue('2', { timeout: 1_000 });
+  await expect(page.getByTestId('pose-field').nth(2)).toHaveValue('2', { timeout: 1_000 });
   await expect(page.getByTestId('pose-field').nth(0)).toHaveAttribute('aria-label', 'pose-x');
 });
 

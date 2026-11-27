@@ -116,7 +116,11 @@ test('200 节点混合图 full/placeholder 首帧对比与拖动成本', async (
   // 65.6% 比例留 ~20 个百分点余量；拖动新指标是 7 批 ×40 次 area.translate 的 median
   // 单步主线程工作量，1.2 上限容忍 ~20% 抖动，但能抓住“占位反而比 full 慢 20% 以上”的实质退化。
   expect(placeholder.firstFrameMs).toBeLessThan(0.85 * full.firstFrameMs);
-  expect(placeholder.dragAvgMs).toBeLessThanOrEqual(full.dragAvgMs * 1.2);
+  // 浮点边界：dragAvgMs = 一批 40 次 area.translate 的耗时 / 40，量化后常见的 0.5ms / 0.6ms
+  // 两批恰好落在 1.2× 边界上，IEEE754 舍入会让 0.6/40 比 (0.5/40)*1.2 大 3.7e-11 而误判
+  // （2026-11-27 实测 Received 0.015000000037252903 / Expected <= 0.015）。1e-6ms
+  // （=40ns/批）的绝对容差只吸收舍入误差，不放宽「占位反而慢 20% 以上」的判定力度。
+  expect(placeholder.dragAvgMs).toBeLessThanOrEqual(full.dragAvgMs * 1.2 + 1e-6);
 
   // 截图只写 Playwright 的 outputPath，不污染仓库；最终产物由维护者手动复制。
   await page.screenshot({ path: testInfo.outputPath('m5-perf.png'), fullPage: false });

@@ -7,6 +7,7 @@ import {
   type BindingValueType,
   type ParamBindingDefinition,
 } from './bindings';
+import { formatFailure } from '../toast';
 import { RosClientImpl, getSharedClient, type RosClient } from '../ros';
 import type {
   ParamBindingRef,
@@ -177,7 +178,7 @@ export class ParamBindingController {
     if (!entry || this.currentStatus !== 'connected') return;
     if (!matchesBindingType(value, entry.definition.valueType)) {
       entry.control.setValue(entry.lastKnownGood, 'rollback');
-      this.onError(`${nodeType}.${portKey} 的值类型不匹配`);
+      this.onError(formatFailure({ kind: 'type', param: `${nodeType}.${portKey}`, reason: '的值类型不匹配' }));
       return;
     }
     if (sameValue(value, entry.lastKnownGood)) return;
@@ -196,13 +197,25 @@ export class ParamBindingController {
           return;
         }
         entry.control.setValue(entry.lastKnownGood, 'rollback');
-        this.onError(result.reason ?? `${nodeType}.${portKey} 写入被拒绝`);
+        this.onError(
+          formatFailure({
+            kind: 'write',
+            param: `${nodeType}.${portKey}`,
+            reason: result.reason ?? '服务端未给出原因',
+          }),
+        );
       },
       (error: unknown) => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
         if (entry.writeSeq !== writeSeq) return;
         entry.control.setValue(entry.lastKnownGood, 'rollback');
-        this.onError(error instanceof Error ? error.message : String(error));
+        this.onError(
+          formatFailure({
+            kind: 'write',
+            param: `${nodeType}.${portKey}`,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        );
       },
     );
   }

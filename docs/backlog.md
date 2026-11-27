@@ -210,9 +210,12 @@
 - owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`
 - 验收：节点增删、连线、控件值修改可撤销/重做（Ctrl+Z / Ctrl+Shift+Z），栈深 100；复制粘贴节点保留值与位置偏移。
 
-### T-033 错误 toast 统一 + AC-1..5 逐条验收 ⏳ 待开始
-- owner: R/Q ｜ scope: `apps/web/src/**`、`docs/reviews/M5-acceptance.md`
-- 验收：所有失败路径走同一 toast 组件（连接失败/加载失败/绑定失败/写入被拒），文案可读且含参数名；AC-1..5 每条有 e2e 或截图证据，写进验收报告。
+### T-033 错误 toast 统一 + AC-1..5 逐条验收 ✅ 已完成
+- owner: R/Q ｜ scope: `apps/web/src/**`、`e2e/*`、`docs/reviews/M5-acceptance.md`
+- 落地：`apps/web/src/toast.ts` 的 `formatFailure({kind,param,reason})`（connect/load/bind/write/type/validate）+ App 10 处 `setLocalToast` 统一走 `pushToast`；`ParamBrowser.onTypeReject(reason, param?)` 与 `useParamBinding` 三处 `onError` 补 `${nodeType}.${portKey}`；保留 `binding.toast || localToast`、`data-testid="ros-toast"`、8s timer 与内联 `control-error`/`script-error`/`param-error`。
+- AC-1..5：新增 `e2e/ac-acceptance.spec.ts`（AC-1 真 ROS + IR 同用例闭环、AC-4 杀 rosbridge 状态轨迹 + `connected:reconnected` 可观测）、`e2e/capture-ac.mjs`（AC-5 100 节点 longtask 0.0ms）；AC-2 复用 `m1-connected.png` / `m1-disconnected.png` 与既有 C2/C2b 用例；AC-3 两处阈值收紧到 1s。逐条映射、门禁数字与缺口修复见 `docs/reviews/M5-acceptance.md`。
+- 反馈闭环：AC-4 预警的 stale connected 缺口已补 `apps/web/src/ros/RosClient.ts` `transport.on('close', () => this.handleTransportClose(generation))` + `App.tsx` `data-detail` + `RosClient.test.ts` 新单测，未弱化验收口径。
+- 门禁：build/check 0、vitest 52、全量 e2e 46 passed + 2 skipped `EXIT=0`、`ROSUI_PERF=1` 2 passed、AC-5 脚本 `EXIT=0`（perf 浮点边界加 1e-6 容差后复跑通过）。
 
 ## 依赖图（ASCII）
 

@@ -1,9 +1,50 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 let stack: ChildProcess | null = null;
+
+/** detached spawn 在 Linux 上 setsid() 成新进程组；记录 leader 的 /proc starttime 防 PID 复用误杀。 */
+export interface DetachedGroup {
+  readonly pid: number;
+  readonly startTime: string;
+}
+
+function readProcStartTime(pid: number): string {
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const end = stat.lastIndexOf(')');
+  if (end < 0) throw new Error(`无法解析 /proc/${pid}/stat`);
+  const fields = stat.slice(end + 2).trim().split(/\s+/);
+  const startTime = fields[19]; // field 22：state 是 field 3，故 starttime 在索引 19。
+  if (!startTime) throw new Error(`无法读取 /proc/${pid}/stat 的 starttime`);
+  return startTime;
+}
+
+export function captureDetachedGroup(proc: ChildProcess): DetachedGroup {
+  const pid = proc.pid;
+  if (pid === undefined) throw new Error('detached 进程没有 PID');
+  return { pid, startTime: readProcStartTime(pid) };
+}
+
+export function killDetachedGroup(
+  group: DetachedGroup,
+  signal: 'SIGKILL' | 'SIGTERM' = 'SIGKILL',
+): void {
+  let currentStartTime: string | undefined;
+  try {
+    currentStartTime = readProcStartTime(group.pid);
+  } catch {
+    // leader 已退出但同一进程组可能还有 rosapi 等子进程；PGID 未释放时仍可整组 kill。
+  }
+  if (currentStartTime !== undefined && currentStartTime !== group.startTime) return;
+  try {
+    process.kill(-group.pid, signal);
+  } catch {
+    // 进程组已退出。
+  }
+}
 
 const ROS_ENV = {
   ...process.env,
@@ -54,6 +95,7 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: numbe
 
 /** 起 rosbridge + demo 节点（若已在跑则复用）；返回清理函数。 */
 export async function startDemoStack(): Promise<() => void> {
+  let group: DetachedGroup | null = null;
   if (!(await portOpen())) {
     stack = spawn(path.join(ROOT, 'scripts/demo-stack.sh'), [], {
       cwd: ROOT,
@@ -62,6 +104,7 @@ export async function startDemoStack(): Promise<() => void> {
       stdio: 'ignore',
     });
     stack.unref();
+    group = captureDetachedGroup(stack);
     await waitFor(portOpen, 60_000);
   } else if (ros2('ros2 node list').includes('/rosui_demo')) {
     return () => undefined; // 外部已经起好了，不归我们清理
@@ -90,17 +133,13 @@ export async function startDemoStack(): Promise<() => void> {
       stdio: 'ignore',
     });
     stack.unref();
+    group = captureDetachedGroup(stack);
   }
   await waitFor(hasNode, 60_000);
   resetDemoParams();
 
   return () => {
-    if (!stack?.pid) return;
-    try {
-      process.kill(-stack.pid, 'SIGTERM');
-    } catch {
-      /* 已退出 */
-    }
+    if (group) killDetachedGroup(group);
     stack = null;
   };
 }
@@ -120,14 +159,9 @@ export function startLateParamNode(): { nodeName: string; stop: () => void } {
     },
   );
   proc.unref();
+  const lateGroup = captureDetachedGroup(proc);
   return {
     nodeName,
-    stop: () => {
-      try {
-        process.kill(-proc.pid!, 'SIGTERM');
-      } catch {
-        // 已经退出了
-      }
-    },
+    stop: () => killDetachedGroup(lateGroup, 'SIGTERM'),
   };
 }

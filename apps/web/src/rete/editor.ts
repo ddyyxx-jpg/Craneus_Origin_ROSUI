@@ -31,6 +31,8 @@ export interface EditorHandle {
   addNodes: (count: number) => Promise<string[]>;
   /** e2e/perf 用：直接设置缩放（不经过鼠标滚轮动画）。 */
   setZoom: (zoom: number) => Promise<void>;
+  /** P2-C：点空白/应用重置选中端口时清除节点视觉选中态。 */
+  clearNodeSelection: () => void;
   /** DEV/e2e 专用：按生产 addNode 路径添加单个节点（不在 UI 暴露）。 */
   addNodeKind: (kind: NodeKind, x: number, y: number) => Promise<RosuiNode>;
 }
@@ -57,15 +59,15 @@ export async function createEditor(
   AreaExtensions.showInputControl(area);
 
   /**
-   * 采样单个节点的布局尺寸（offsetWidth/Height 不受 area transform 影响）。
-   * 只在 render/resized 时调用，绝不在每帧读布局；
-   * full 模式下尺寸变化要通知 Rete 重算 socket 位置，placeholder 模式则只刷新缓存。
+   * 采样单个节点的真实布局尺寸（offsetWidth/Height 不受 area transform 影响）。
+   * 二轮评审 P1-B：只在 full 模式采样；placeholder 模式下节点 DOM 是简化占位，
+   * 它的 offsetWidth/Height 来自占位自身尺寸或兜底常量，回写会覆盖跨阈值前锁定的 full 尺寸。
+   * 低缩放新增且没有缓存的节点由 LodNode 按节点类型选默认占位尺寸，不在这里污染缓存。
    */
   const sampleNode = (id: string, element: HTMLElement): void => {
-    const width = element.offsetWidth;
-    const height = element.offsetHeight;
-    const changed = updateNodeSize(id, width, height);
-    if (changed && getLod() === 'full') {
+    if (getLod() !== 'full') return;
+    const changed = updateNodeSize(id, element.offsetWidth, element.offsetHeight);
+    if (changed) {
       void area.update('node', id).catch(() => undefined);
     }
   };
@@ -92,19 +94,66 @@ export async function createEditor(
     return context;
   });
 
+  /**
+   * 二轮评审 P2-C：本应用的“选中”是端口选择语义（nodepicked → App.selectNode → selectedPort），
+   * Rete 的 node.selected 不会被 selectableNodes 写入。这里在 nodepicked 管道同步把选中态
+   * 写到节点 DOM 的 class/data-selected，并清掉其它节点；full（styled-components）和
+   * placeholder（styles.css）都识别同一组标记，不再依赖 node.selected。
+   */
+  const markSelectedNode = (id: string | null): void => {
+    for (const node of editor.getNodes()) {
+      const element = area.nodeViews.get(node.id)?.element;
+      if (!element) continue;
+      // classic preset 的根节点就是 [data-testid=node]（非 .node-shell）；
+      // placeholder/自定义节点才用 .node-shell。两者都直接标记容器，不调用
+      // area.update，避免 React 重渲染把 DOM 标记冲掉。
+      const targets: HTMLElement[] = [];
+      const testNode = element.querySelector<HTMLElement>('[data-testid="node"]');
+      if (testNode) targets.push(testNode);
+      const shells = Array.from(element.querySelectorAll<HTMLElement>('.node-shell'));
+      if (element.classList.contains('node-shell')) targets.push(element);
+      targets.push(...shells);
+      for (const shell of targets) {
+        shell.classList.toggle('selected', node.id === id);
+        if (node.id === id) shell.setAttribute('data-selected', 'true');
+        else shell.removeAttribute('data-selected');
+      }
+    }
+  };
+
+  let selectedNodeId: string | null = null;
+  const clearNodeSelection = (): void => {
+    if (selectedNodeId === null) return;
+    selectedNodeId = null;
+    markSelectedNode(null);
+  };
+
   // M4 A: stamp node id on the rendered DOM so the canvas click handler can map a
   // clicked title/control region back to a specific node instance for binding.
   area.addPipe((context) => {
     if (context.type === 'render' && context.data.type === 'node') {
       context.data.element.setAttribute('data-node-id', context.data.payload.id);
+      // render 会重建节点子树（full ↔ placeholder 切换时），重放当前选中 id。
+      if (selectedNodeId === context.data.payload.id) markSelectedNode(selectedNodeId);
     }
-    if (context.type === 'nodepicked' && onNodePicked) {
-      onNodePicked(context.data.id);
+    if (context.type === 'nodepicked') {
+      selectedNodeId = context.data.id;
+      // 延后到 React 完成重渲染后写 DOM，避免 area.update 把标记清掉。
+      requestAnimationFrame(() => markSelectedNode(selectedNodeId));
+      if (onNodePicked) onNodePicked(context.data.id);
+    }
+    // 点击空白画布取消端口选中：不碰 selectedPort 的业务绑定，只清节点视觉高亮。
+    if (context.type === 'pointerdown') {
+      const target = context.data.event.target;
+      if (target instanceof Element && !target.closest('.node-shell, [data-testid="node"]')) {
+        clearNodeSelection();
+      }
     }
     return context;
   });
 
-  // M5 review #4：所有生产路径（addNode/loadGraph）都在 render 管道统一采样尺寸。
+  // M5 review #4：所有生产路径（addNode/loadGraph）都在 render 管道统一采样尺寸；
+  // 二轮 P1-B：sampleNode 内部只认 full 模式，placeholder 的 render/resized 不再回写尺寸缓存。
   // noderesized 补采动态改宽高的节点；二者均不是逐帧事件。
   area.addPipe((context) => {
     if (context.type === 'render' && context.data.type === 'node') {
@@ -159,20 +208,18 @@ export async function createEditor(
     },
     setZoom: async (zoom: number) => {
       // 同步入口（e2e 用）：立刻采样一次，避免依赖 rAF 的异步时机。
-      if (getLod() === 'full' && zoom < LOD_ENTER_THRESHOLD) captureNodeSizesOnce();
+      if (getLod() === 'full' && zoom < LOD_ENTER_THRESHOLD) captureSizes();
       await area.area.zoom(zoom);
       setLodZoom(zoom);
+      // render 管道只给当前节点重放；这里补一次全图扫描，确保切换后旧节点也清干净。
+      requestAnimationFrame(() => {
+        if (selectedNodeId !== null) markSelectedNode(selectedNodeId);
+        else clearNodeSelection();
+      });
     },
+    clearNodeSelection,
     addNodeKind: (kind: NodeKind, x: number, y: number) => addNode(handle, kind, x, y),
   };
-
-  /** setZoom 跨阈值前同步锁定尺寸，复用 render 管道的采样逻辑。 */
-  function captureNodeSizesOnce(): void {
-    for (const node of editor.getNodes()) {
-      const element = area.nodeViews.get(node.id)?.element;
-      if (element) sampleNode(node.id, element);
-    }
-  }
 
   return handle;
 }

@@ -61,7 +61,8 @@ export function captureNodeSizes(
 
 /**
  * 补采单个节点的真实尺寸（不清空其它节点缓存）。
- * 返回值表示尺寸是否变化：full 时变化则需要让 Rete 重算 socket 位置。
+ * 二轮评审 P1-B：只允许 full 模式调用；placeholder 的 offsetWidth/Height 是占位/兜底尺寸，
+ * 回写会污染跨阈值前 captureNodeSizes 锁定的真实尺寸，切回 full 后节点会跳变。
  */
 export function updateNodeSize(id: string, width: number, height: number): boolean {
   const old = sizes.get(id);

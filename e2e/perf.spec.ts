@@ -9,7 +9,9 @@ test.skip(process.env.ROSUI_PERF !== '1', '性能压测默认跳过：ROSUI_PERF
 
 interface PerfSample {
   firstFrameMs: number;
+  /** 一批节点拖动中，平均每次 area.translate 的主线程工作量（ms），不含 rAF/vsync 间隔。 */
   dragAvgMs: number;
+  /** 各批拖动中工作量最大的一批的平均值（ms）。 */
   dragMaxMs: number;
   placeholderCount: number;
   nodeCount: number;
@@ -60,20 +62,24 @@ async function measure(page: Page, count: number, placeholder: boolean): Promise
       const view = handle.area.nodeViews.get(target);
       if (!view) throw new Error('节点视图不存在');
       const before = view.position;
-      const frames: number[] = [];
-      let previous = performance.now();
-      for (let i = 0; i < 30; i += 1) {
-        await handle.area.translate(target, { x: before.x + i * 2, y: before.y + i });
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame((now) => {
-            frames.push(now - previous);
-            previous = now;
-            resolve();
-          });
-        });
+      // 二轮评审 P2-D：旧指标用相邻 rAF 时间戳（≈16.6ms），被 vsync 锁死，
+      // 1.2× 阈值只能抓严重退化。新指标用 performance.now() 包住「一批」连续
+      // area.translate（含 nodetranslated 管道里的连线/socket 重算）的同步主线程
+      // 工作量；每批 40 次摊薄 performance.now() 的量化误差，跑 7 批取中位数，
+      // rAF 只用于批间让出渲染帧，不计入工作量。
+      const batchSizes: number[] = [];
+      for (let round = 0; round < 7; round += 1) {
+        const startedAt = performance.now();
+        for (let i = 0; i < 40; i += 1) {
+          const step = round * 40 + i + 1;
+          await handle.area.translate(target, { x: before.x + step, y: before.y + step });
+        }
+        batchSizes.push(performance.now() - startedAt);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
-      const dragAvgMs = frames.reduce((sum, value) => sum + value, 0) / frames.length;
-      const dragMaxMs = Math.max(...frames);
+      const sorted = [...batchSizes].sort((a, b) => a - b);
+      const dragAvgMs = sorted[Math.floor(sorted.length / 2)]! / 40;
+      const dragMaxMs = Math.max(...batchSizes) / 40;
       return {
         firstFrameMs,
         dragAvgMs,
@@ -106,9 +112,9 @@ test('200 节点混合图 full/placeholder 首帧对比与拖动成本', async (
   expect(placeholder.connectionCount).toBeGreaterThanOrEqual(100);
   console.log(`[perf][placeholder] ${JSON.stringify(placeholder)}`);
 
-  // 评审 #5：对比式断言。0.85 基于同机多轮 full 366ms / placeholder 240ms 的
-  // 65.6% 比例留 ~20 个百分点余量；1.2 的拖动上限容忍 ~20% CI 抖动，
-  // 但能抓住“占位反而比 full 慢”的实质性退化。
+  // 评审 #5 + 二轮 P2-D：对比式断言。0.85 基于同机多轮 full 366ms / placeholder 240ms 的
+  // 65.6% 比例留 ~20 个百分点余量；拖动新指标是 7 批 ×40 次 area.translate 的 median
+  // 单步主线程工作量，1.2 上限容忍 ~20% 抖动，但能抓住“占位反而比 full 慢 20% 以上”的实质退化。
   expect(placeholder.firstFrameMs).toBeLessThan(0.85 * full.firstFrameMs);
   expect(placeholder.dragAvgMs).toBeLessThanOrEqual(full.dragAvgMs * 1.2);
 

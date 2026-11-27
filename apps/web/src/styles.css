@@ -234,7 +234,16 @@ button.toggle.on .toggle-knob { transform: translateX(20px); }
   color: #eee;
   font-size: 11px;
 }
+/* P2-C：黄色高亮规则需放在 .node-shell 基准之后，避免被 background/border 覆盖。
+   右边框兼容旧 Inspector 选中样式；classic/placeholder 都用同一语义。 */
 .node-shell[data-selected='true'] { border-right-color: #2d6cdf; border-right-width: 5px; }
+.node-shell.selected,
+.node-shell[data-selected='true'],
+[data-testid='node'].selected,
+[data-testid='node'][data-selected='true'] {
+  background: #ffd92c;
+  border-color: #e3c000;
+}
 .node-shell .title { font-weight: 600; padding: 2px 4px 4px; }
 .inspector-panel {
   max-height: 160px;
@@ -304,7 +313,8 @@ button.toggle.on .toggle-knob { transform: translateX(20px); }
   font-family: Arial;
   line-height: initial;
 }
-.node-lod-placeholder.node.selected {
+.node-lod-placeholder.node.selected,
+.node-lod-placeholder.node[data-selected='true'] {
   background: #ffd92c;
   border-color: #e3c000;
 }

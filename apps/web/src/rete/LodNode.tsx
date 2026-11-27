@@ -20,7 +20,24 @@ const RefSocket = ReactPresets.classic.RefSocket as unknown as (props: {
   'data-testid': string;
 }) => ReactElement;
 
-/** 占位尺寸回退值：实测经典节点 180×119，保证首帧也不塌陷。 */
+/**
+ * 二轮评审 P1-B：无 full 尺寸缓存时按节点类型给默认占位尺寸（单位 px）。
+ * 数据来源：2026-11-27 一次性 Playwright 探针（e2e/_probe-sizes.spec.ts，量完即删），
+ * 在 full 模式逐类型调用 addNodeKind 后读节点根元素 offsetWidth/Height：
+ * Gain/Threshold/Label/Mode/Switch 180×119、Pose 180×144、Inspector 180×71、Script 252×273。
+ * 这样 k=0.2 下新建节点切回 k=1 时不会从 180×119 跳到真实高度。
+ */
+const TYPE_SIZES: Record<string, { width: number; height: number }> = {
+  Gain: { width: 180, height: 119 },
+  Threshold: { width: 180, height: 119 },
+  Label: { width: 180, height: 119 },
+  Mode: { width: 180, height: 119 },
+  Switch: { width: 180, height: 119 },
+  Pose: { width: 180, height: 144 },
+  Inspector: { width: 180, height: 71 },
+  Script: { width: 252, height: 273 },
+};
+/** 未知类型的最后兜底：实测经典节点 180×119。 */
 const FALLBACK_SIZE = { width: 180, height: 119 };
 
 /** 读取自定义节点类型标签，供占位标题使用。 */
@@ -43,8 +60,15 @@ function PlaceholderNode({
   data: NodeData;
   emit: RenderEmit<ClassicScheme>;
 }): ReactElement {
-  const size = placeholderSize(data.id) ?? FALLBACK_SIZE;
-  const selected = (data as unknown as { selected?: boolean }).selected === true;
+  const size = placeholderSize(data.id) ?? TYPE_SIZES[nodeKind(data)] ?? FALLBACK_SIZE;
+  // P2-C：选中态由 createEditor 的 nodepicked 管道写到 area.nodeViews 容器 DOM；
+  // 本应用不使用 Rete node.selected，因此只从容器 class/data-selected 读回。
+  const container = document.querySelector<HTMLElement>(
+    `[data-node-id='${data.id}'], [data-node-id='${data.id}'] .node-shell`,
+  );
+  const selected =
+    container?.classList.contains('selected') === true ||
+    container?.getAttribute('data-selected') === 'true';
   const inputs = Object.entries(data.inputs);
   const outputs = Object.entries(data.outputs);
   return (

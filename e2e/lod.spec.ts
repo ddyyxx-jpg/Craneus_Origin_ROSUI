@@ -95,33 +95,75 @@ test.describe('LOD 几何与阈值', () => {
     expect(await lodCount()).toBe(5);
   });
 
-  test('placeholder 选中态：class 与 data-selected 与 classic 一致', async ({ page }) => {
+  test('k=0.2 下新增 Pose：占位尺寸按类型取值，切回 full 尺寸不跳变', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
       timeout: 20_000,
     });
-    // classic preset 的选中态来自 node.data.selected；用与 selectableNodes 相同的
-    // 数据路径置位后 area.update，再切 placeholder，验证它是从 data.selected 传播而非 DOM 残留。
+    const addPose = async (): Promise<string> =>
+      page.evaluate(async () => {
+        const handle = (window as unknown as {
+          __rosui?: { addNodeKind: (kind: 'pose', x: number, y: number) => Promise<{ id: string }> };
+        }).__rosui;
+        if (!handle) throw new Error('window.__rosui 未挂载');
+        const node = await handle.addNodeKind('pose', 900, 600);
+        return node.id;
+      });
+    const zoom = async (k: number): Promise<void> =>
+      page.evaluate(async (value) => {
+        const handle = (window as unknown as { __rosui?: { setZoom: (k: number) => Promise<void> } })
+          .__rosui;
+        if (!handle) throw new Error('window.__rosui 未挂载');
+        await handle.setZoom(value);
+      }, k);
+    const sizeOf = async (id: string): Promise<{ w: number; h: number }> =>
+      page.evaluate((nodeId) => {
+        const node = document.querySelector<HTMLElement>(`[data-node-id="${nodeId}"] .node-shell`)
+          ?? document.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
+        if (!node) throw new Error(`找不到节点 ${nodeId}`);
+        return { w: node.offsetWidth, h: node.offsetHeight };
+      }, id);
+
+    await zoom(0.2);
+    const id = await addPose();
+    const placeholder = await sizeOf(id);
+    // 真实 full Pose 探针为 180×144（见 LodNode.tsx TYPE_SIZES 注释），不是全局 180×119。
+    expect(placeholder.w).toBe(180);
+    expect(Math.abs(placeholder.h - 144)).toBeLessThanOrEqual(2);
+
+    await zoom(1);
+    const full = await sizeOf(id);
+    expect(Math.abs(full.w - placeholder.w)).toBeLessThanOrEqual(2);
+    expect(Math.abs(full.h - placeholder.h)).toBeLessThanOrEqual(2);
+    expect(full.h).toBe(144);
+  });
+
+  test('选中态：真实点击 → full/placeholder 保持高亮 → 点空白取消', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByTestId('canvas-status')).toHaveAttribute('data-state', 'ready', {
+      timeout: 20_000,
+    });
+    // P2-C：真实点击节点标题触发 nodepicked → App.selectNode → selectedPort；
+    // 本应用不会写 Rete node.selected，直接置位属于不可达路径。
+    const titles = page.locator('[data-testid="node"] .title');
+    await titles.first().click();
+    const selected = page.locator('[data-testid="node"].selected[data-selected="true"]');
+    await expect(selected).toHaveCount(1);
+    await expect(selected).toHaveCSS('background-color', 'rgb(255, 217, 44)');
+
     await page.evaluate(async () => {
-      const handle = (window as unknown as {
-        __rosui?: {
-          setZoom: (k: number) => Promise<void>;
-          editor: { getNodes: () => { id: string; selected?: boolean }[] };
-          area: { update: (type: string, id: string) => Promise<void> };
-        };
-      }).__rosui;
+      const handle = (window as unknown as { __rosui?: { setZoom: (k: number) => Promise<void> } })
+        .__rosui;
       if (!handle) throw new Error('window.__rosui 未挂载');
-      const target = handle.editor.getNodes()[0];
-      if (!target) throw new Error('页面没有节点');
-      target.selected = true;
-      await handle.area.update('node', target.id);
       await handle.setZoom(0.3);
     });
-    await expect(page.locator('[data-testid="node-lod"].selected')).toHaveCount(1);
-    await expect(page.locator('[data-testid="node-lod"][data-selected="true"]')).toHaveCount(1);
-    await expect(page.locator('[data-testid="node-lod"].selected')).toHaveCSS(
-      'background-color',
-      'rgb(255, 217, 44)',
-    );
+    const placeholder = page.locator('[data-testid="node-lod"].selected[data-selected="true"]');
+    await expect(placeholder).toHaveCount(1);
+    await expect(placeholder).toHaveCSS('background-color', 'rgb(255, 217, 44)');
+
+    await page.locator('.canvas').click({ position: { x: 5, y: 5 } });
+    await expect(
+      page.locator('[data-testid="node"].selected[data-selected="true"], [data-testid="node-lod"].selected[data-selected="true"]'),
+    ).toHaveCount(0);
   });
 });

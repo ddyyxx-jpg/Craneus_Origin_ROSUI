@@ -104,8 +104,10 @@
 | `corepack pnpm build` | 0（`✓ built in 1.04s`） | 0（`dist/index.js 457.90kB`） |
 | `corepack pnpm check` | 0（IR 5 passed） | 0 |
 | 全量 vitest | 8 files / 47 passed（新增 `loadToast` 4 例） | 7 files / 43 passed |
-| 全量 Playwright | **40 passed / EXIT=0**（2.1m） | **42 passed + 2 skipped / EXIT=0**（1.9m） |
-| `ROSUI_PERF=1 e2e/perf.spec.ts` | 本分支无 perf spec | 2 passed（12.7s），数字见 P2-D |
+| 全量 Playwright | **40 passed / EXIT=0**（2.1m） | **42 passed + 2 skipped / EXIT=0**（1.9m）；合入 #3 后复跑 **44 passed + 2 skipped / EXIT=0**（2.0m） |
+| `ROSUI_PERF=1 e2e/perf.spec.ts` | 本分支无 perf spec | 2 passed（12.7s）；整合后复跑 2 passed（12.8s），full 首帧 740.9ms / 拖动 0.015ms·次⁻¹，placeholder 298.9ms / 0.0125ms·次⁻¹ |
+
+合并后门禁（2026-11-27，`feat/m5-lod-perf` 合入 `feat/m5-save-load` 后）：`build` 0（`✓ built in 1.05s`，dist/index 457.96kB）、`check` 0、全量 vitest 8 files / 47 passed、全量 Playwright 44 passed + 2 skipped / EXIT=0、`ROSUI_PERF=1` 2 passed / EXIT=0。两条 PR 分支已推送：`feat/m5-save-load`=`36dcf80`、`feat/m5-lod-perf`=`5f066ff`。
 
 说明：#3 指定 e2e 首跑曾出现一次 `ros2 param get` 回读 0.75 的时序 flake，单跑与整体重跑均 6 passed；lead 独立全量复跑 40 passed 无 flake。P2-B 属 DEV-only 注入式故障（不 mock `loadGraph`、不依赖 zod 失败路径），因为现有实现里 schema 合法后唯一自然抛错点是重复 id 前置拦截；真 ROS 写回断言已落地。
 

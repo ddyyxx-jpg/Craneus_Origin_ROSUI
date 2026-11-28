@@ -206,9 +206,12 @@
 - 落地：`rete/lod.ts`（`useSyncExternalStore` 广播 + 双阈值 hysteresis + 尺寸缓存）、`rete/LodNode.tsx`（占位节点复用 classic 布局类与几何常量、保留 socket、不卸载 NodeView、选中态同步）、`editor.ts` 的 rAF 节流 zoomed → LOD + render/noderesized 尺寸采样、生产 `addNode()` 路径与 DEV `addNodeKind`、`e2e/perf.spec.ts`（默认跳过，`ROSUI_PERF=1` 开启）、`e2e/lod.spec.ts`。实测 full 首帧 743.8ms / placeholder 370.9ms，拖动均 ~16.2ms/帧。
 - 二轮评审处置（PR #4 R2）：P1-B placeholder 不再回写尺寸缓存 + `TYPE_SIZES` 按类型兜底（Pose 180×144 等）；P2-C 真实点击 `nodepicked` → DOM `selected`/`data-selected`，不依赖 `node.selected`；P2-D perf 拖动改 `performance.now()` 包裹 `area.translate` 的同步工作量；P2-E `playwright.config.ts` webServer 改 `cd apps/web && exec node ...vite.js`，避免 pnpm/sh PGID 分裂导致全量 e2e 后 CLI 不退出。
 
-### T-032 撤销 / 重做 + 复制粘贴 ⏳ 待开始
-- owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/App.tsx`
-- 验收：节点增删、连线、控件值修改可撤销/重做（Ctrl+Z / Ctrl+Shift+Z），栈深 100；复制粘贴节点保留值与位置偏移。
+### T-032 撤销 / 重做 + 复制粘贴 ✅ 已完成
+- owner: A ｜ scope: `apps/web/src/rete/editor.ts`、`apps/web/src/rete/history.ts`、`apps/web/src/App.tsx`、`apps/web/src/binding/useParamBinding.ts`、`e2e/undo-copy-paste.spec.ts`
+- 验收：节点增删、连线、控件值修改可撤销/重做（Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y），栈深 100；Ctrl/Cmd 多选后复制粘贴生成新 id、位置 `+40/+40`、保留值与内部连线，不复制 ROS 运行期绑定。
+- 落地：`apps/web/src/rete/history.ts` 纯 GraphIR 快照栈（100）+ `createClipboard/pasteGraph`；`editor.ts` 选中集合 `Set<string>`、placeholder DOM 同步与 render 热路径 O(1) 选中标记；`App.tsx` 80ms 自动提交合并、静默恢复、串行队列、6 个 DEV 验收 API 与快捷键；自动 commit 不刷新 CurrentIR 以避免 200 节点批量建图时 LOD 首帧回归；`useParamBinding.dismissToast()` 清静默恢复前残留 ROS toast。`e2e/undo-copy-paste.spec.ts` 4 条真键盘用例 + `apps/web/src/rete/history.test.ts` 9 例纯函数单测。
+- 反馈闭环：独立复核「无 P0/P1」；3 条 P2 已修/记录——pending 80ms commit 在 undo/redo/paste 前定稿，恢复失败不推进历史栈，静默恢复清 `binding.toast`；仅剩「中途 loadGraph 失败画布可能部分重建」「Ctrl+C 未入串行队列」「快速 undo/redo 用例未锁 position」为低风险 P2。
+- 门禁：build/check 0、vitest 61、全量 e2e 50 passed + 2 skipped `EXIT=0`、focused T-032 e2e 4 passed、`ROSUI_PERF=1` 2 passed、AC-5 脚本与 `e2e:shots` 通过（最终数字见 `docs/reviews/M5-t032-acceptance.md`）。
 
 ### T-033 错误 toast 统一 + AC-1..5 逐条验收 ✅ 已完成
 - owner: R/Q ｜ scope: `apps/web/src/**`、`e2e/*`、`docs/reviews/M5-acceptance.md`

@@ -488,6 +488,8 @@ export interface UseParamBindingResult {
     value: ParamValue,
     instanceId?: string,
   ): void;
+  /** T-032：静默恢复 undo/redo/粘贴时清掉仍挂着的 ROS 写入/绑定错误提示。 */
+  dismissToast(): void;
 }
 
 export function useParamBinding(client?: RosClient): UseParamBindingResult {
@@ -580,10 +582,15 @@ export function useParamBinding(client?: RosClient): UseParamBindingResult {
       controllerRef.current?.onControlChange(nodeType, portKey, value, instanceId),
     [],
   );
+  const dismissToast = useCallback(() => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = undefined;
+    setToast('');
+  }, []);
 
   // 保持返回对象稳定（除状态字段），避免调用方 effect 因引用变化反复重跑。
   return useMemo(
-    () => ({ status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange }),
-    [status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange],
+    () => ({ status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange, dismissToast }),
+    [status, statusDetail, toast, connect, disconnect, register, bind, unbind, onControlChange, dismissToast],
   );
 }

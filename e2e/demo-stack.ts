@@ -96,19 +96,6 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: numbe
 /** 起 rosbridge + demo 节点（若已在跑则复用）；返回清理函数。 */
 export async function startDemoStack(): Promise<() => void> {
   let group: DetachedGroup | null = null;
-  if (!(await portOpen())) {
-    stack = spawn(path.join(ROOT, 'scripts/demo-stack.sh'), [], {
-      cwd: ROOT,
-      env: ROS_ENV,
-      detached: true,
-      stdio: 'ignore',
-    });
-    stack.unref();
-    group = captureDetachedGroup(stack);
-    await waitFor(portOpen, 60_000);
-  } else if (ros2('ros2 node list').includes('/rosui_demo')) {
-    return () => undefined; // 外部已经起好了，不归我们清理
-  }
 
   /** 每次栈就绪后把 demo 参数复位，避免上一个 spec / 上一次运行留下的值污染断言。 */
   const resetDemoParams = (): void => {
@@ -118,14 +105,32 @@ export async function startDemoStack(): Promise<() => void> {
     ros2('ros2 param set /rosui_demo pose "[2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0]"');
   };
 
-  const hasNode = () => {
+  /** 用真实 get 服务判定节点活着；`ros2 node list` / `param list` 会短暂命中已退出节点的陈旧 DDS 发现记录。 */
+  const hasNode = (): boolean => {
     try {
-      return ros2('ros2 param list /rosui_demo').includes('gain');
+      return ros2('timeout 5 ros2 param get /rosui_demo gain').includes('Double value is:');
     } catch {
       return false;
     }
   };
-  if (!hasNode() && !stack) {
+
+  const portAvailable = await portOpen();
+  if (!portAvailable) {
+    stack = spawn(path.join(ROOT, 'scripts/demo-stack.sh'), [], {
+      cwd: ROOT,
+      env: ROS_ENV,
+      detached: true,
+      stdio: 'ignore',
+    });
+    stack.unref();
+    group = captureDetachedGroup(stack);
+    await waitFor(portOpen, 60_000);
+  } else if (hasNode()) {
+    // 外部栈已完整可用：不归我们清理，但仍复位参数，避免上个 spec 的值串味。
+    resetDemoParams();
+    return () => undefined;
+  } else {
+    // 9090 可能来自残留 rosbridge，而参数服务已失联：补起 demo 节点（脚本会复用已监听的 rosbridge）。
     stack = spawn(path.join(ROOT, 'scripts/demo-stack.sh'), [], {
       cwd: ROOT,
       env: ROS_ENV,

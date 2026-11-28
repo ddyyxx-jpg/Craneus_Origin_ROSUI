@@ -5,6 +5,9 @@ import { getSharedClient } from '../ros';
 import { InspectorNode, ScriptNode } from './nodes';
 import { classicNodeRenderer, withCustomNodeLod, withNodeLod } from './LodNode';
 
+/** T-032：脚本失焦 / Ctrl+Enter 执行后作为一个提交边界。 */
+const SCRIPT_COMMIT_EVENT = 'rosui:script-committed';
+
 /** 订阅所有参数事件，100ms 节流刷新参数值（不依赖具体参数 ref）。 */
 function useParamValues(refs: readonly ParamBindingDefinition['ref'][]) {
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -114,7 +117,10 @@ export function ScriptNodeComponent({
   const selected = data.selected || false;
   const run = (): void => {
     data.code = code;
-    void data.run().then(() => setVersion((value) => value + 1));
+    void data.run()
+      .then(() => setVersion((value) => value + 1))
+      .finally(() => window.dispatchEvent(new CustomEvent(SCRIPT_COMMIT_EVENT, { detail: data.id })))
+      .catch(() => undefined);
   };
   useEffect(() => {
     setCode(data.code);

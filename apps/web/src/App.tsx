@@ -570,6 +570,8 @@ export function App() {
   );
 
   const copySelection = useCallback((): void => {
+    // 异步恢复（undo/redo/粘贴）期间画布可能只重建到一半；忽略此期间的复制，避免把中间态写入剪贴板。
+    if (restoringRef.current) return;
     const editorHandle = handleRef.current;
     if (!editorHandle) return;
     const ir = serializeGraph(editorHandle);
@@ -631,18 +633,21 @@ export function App() {
     [pushToast],
   );
 
-  // DEV API 在渲染期写入 ref；编辑器 effect 执行时已可用，且不进入依赖数组触发重建。
-  devApiRef.current = {
-    commitHistory: () => commitHistory(),
-    undoHistory: () => undoHistory(),
-    redoHistory: () => redoHistory(),
-    copySelection: () => copySelection(),
-    pasteSelection: () => pasteSelection(),
-    getHistoryState: () => ({
-      undo: historyRef.current.undo.length,
-      redo: historyRef.current.redo.length,
-    }),
-  };
+  // DEV API 用 effect 写入 ref，避免在渲染期写 ref；createEditor().then() 是微任务，
+  // 会等本轮所有 effect 同步执行完再读取 devApiRef.current，顺序仍然可靠。
+  useEffect(() => {
+    devApiRef.current = {
+      commitHistory: () => commitHistory(),
+      undoHistory: () => undoHistory(),
+      redoHistory: () => redoHistory(),
+      copySelection: () => copySelection(),
+      pasteSelection: () => pasteSelection(),
+      getHistoryState: () => ({
+        undo: historyRef.current.undo.length,
+        redo: historyRef.current.redo.length,
+      }),
+    };
+  }, [commitHistory, undoHistory, redoHistory, copySelection, pasteSelection]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {

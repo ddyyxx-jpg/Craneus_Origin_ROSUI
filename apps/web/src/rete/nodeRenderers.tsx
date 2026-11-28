@@ -119,7 +119,8 @@ export function ScriptNodeComponent({
     data.code = code;
     void data.run()
       .then(() => setVersion((value) => value + 1))
-      .finally(() => window.dispatchEvent(new CustomEvent(SCRIPT_COMMIT_EVENT, { detail: data.id })));
+      .finally(() => window.dispatchEvent(new CustomEvent(SCRIPT_COMMIT_EVENT, { detail: data.id })))
+      .catch(() => undefined);
   };
   useEffect(() => {
     setCode(data.code);

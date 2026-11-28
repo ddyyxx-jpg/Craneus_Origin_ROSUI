@@ -23,7 +23,7 @@
 
 配套纯函数单测：`apps/web/src/rete/history.test.ts`（9 例）覆盖 100 栈深、redo 清空/封顶、undo/redo 往返、边界不变、输入不被修改、runtime→static、新 id/偏移/边重映射、静态绑定 node 重映射、自定义 offset。
 
-独立只读复核 `t032-review` 两轮结论均为「未发现阻塞合并的 P0/P1」。首轮 3 条 P2（pending 80ms commit、恢复失败仍推进栈、静默恢复残留 `binding.toast`）已修并二次复核确认；二次复核剩余 3 条低风险 P2：中途 `loadGraph()` 失败画布可能部分重建、`Ctrl+C` 未入串行队列、快速 undo/redo 用例未锁新增节点 position。
+独立只读复核 `t032-review` 两轮结论均为「未发现阻塞合并的 P0/P1」。首轮 3 条 P2（pending 80ms commit、恢复失败仍推进栈、静默恢复残留 `binding.toast`）已修并二次复核确认；二次复核剩余 3 条低风险 P2：中途 `loadGraph()` 失败画布可能部分重建、`Ctrl+C` 在异步恢复期间可能复制中间态、快速 undo/redo 用例未锁新增节点 position。其中 `Ctrl+C` 竞态已在 PR #6 首轮审查后以「恢复期间忽略复制」修掉（见第 6 节）。
 
 ## 3. 门禁
 
@@ -43,7 +43,7 @@
 - 快照恢复仍受 `loadGraph()` 已记录限制约束：边 id 不恢复（Rete 重建生成）、`ScriptNode` 保存/恢复 `code` 但不恢复 `x` 输入值；本任务不改 GraphIR schema，也不做 command pattern/localStorage。
 - LOD 的 `lod.ts` 单例与低缩放占位尺寸缓存沿用 T-031 实现；T-032 只把选中态从单值扩成 `Set<string>`，未破坏 `e2e/lod.spec.ts` 的单节点高亮/空白清选中断言。
 - DEV-only `window.__rosui` 新增 `commitHistory/getHistoryState` 等验收入口，仅用于 e2e；生产构建不挂 API。
-- 二次复核记录的 3 条低风险 P2 不阻塞合并：内部快照已经过 `parseGraph` 校验；`Ctrl+C` 与异步恢复极限连按未覆盖；快速 undo/redo 用例只锁节点/边数量，未锁新增节点 position。
+- 二次复核剩余 2 条低风险 P2 不阻塞合并：内部快照已经过 `parseGraph` 校验；快速 undo/redo 用例只锁节点/边数量，未锁新增节点 position。`Ctrl+C` 在异步恢复期间复制中间态已修（见第 6 节）。
 
 ## 5. 性能回归定位与收尾门禁
 
@@ -52,3 +52,12 @@
 - **修复**：保留 T-032 自动提交与快捷键语义，只让 `commitGraphIfChanged()` 更新 ref 历史栈，不再 `setGraph()`；IR 面板继续由用户改值 `onValue`、程序写值 `setValue`、加载成功与 `restoreGraphSilently()` 显式刷新。`apps/web/src/rete/editor.ts` 另把 render 热路径的选中标记从全图扫描改成 O(1) 单节点标记，避免批量建图 O(n²)；全图扫描保留给显式改选中集合/缩放切换。
 - **最小回归**：`CHECK_EXIT=0`；`VITEST_EXIT=0`（10 files / 61 passed）；`ROSUI_PERF=1` 2 passed（full 749.2ms / placeholder 318.1ms，dragAvg 0.015/0.010）；focused `e2e/undo-copy-paste.spec.ts + e2e/controls.spec.ts + e2e/lod.spec.ts` 17 passed（含 `current-ir` 控件断言、T-032 4 例与 LOD 选中态）；`git diff --check` 0；进程/端口均干净。
 - **最终全量门禁**（`/tmp/rosui-t032-finalgate.summary`）：`BUILD_EXIT=0`、`CHECK_EXIT=0`、`VITEST_EXIT=0`（61 例）、`VITE_READY_EXIT=0`、`SHOTS_EXIT=0`、`AC5_EXIT=0`（`docs/artifacts/ac5-100-nodes.json` = `{"maxLongTaskMs":0,"nodeCount":100}`）、全量 `E2E_EXIT=0`（52 tests / 50 passed + 2 skipped，2.1m；AC-4 1544ms 完成 `connected → disconnected → connecting → disconnected → connecting → connected`）、`PERF_EXIT=0`（full 745.5ms / placeholder 326.8ms，2 passed）、`DIFF_CHECK_EXIT=0`、最终进程/端口均干净。父脚本被 harness SIGKILL 后 e2e 作为孤儿完成，收尾 perf/diff 在同一工作树补跑并把汇总拼接完整；所有日志路径为 `/tmp/rosui-t032-finalgate-*.log`。
+
+## 6. PR #6 首轮审查后的 P2 修复与复审
+
+- 独立只读审查 `pr6-review`：PR #6 `91c186d` 无 P0/P1、可合并；6 条 P2 中，P2-1（纯结构操作后 CurrentIR 展示滞后）是 perf 修复的有意权衡，P2-5（e2e 外部栈参数复位 / `ROS_DOMAIN_ID` 约定）保持测试环境约定，P2-6（PR 无 CI checks）在授权后贴门禁评论；其余 3 条已修：
+  - P2-2：`apps/web/src/App.tsx` 把 `devApiRef.current = {...}` 从渲染期移到 `useEffect(..., [commitHistory, undoHistory, redoHistory, copySelection, pasteSelection])`；`createEditor().then()` 是 Promise 微任务，晚于本轮同步 effect，`window.__rosui` 仍可用。
+  - P2-3：`apps/web/src/App.tsx:572-580` 的 `copySelection()` 在 `restoringRef.current` 为真时直接 return，避免 undo/redo/粘贴异步恢复期间复制中间态。
+  - P2-4：`apps/web/src/rete/nodeRenderers.tsx:120-123` 的 Script `run()` Promise 链在 `.finally()` 后补 `.catch(() => undefined)`，避免理论 unhandled rejection。
+- 二轮只读复审 `pr6-rereview`：未发现仍阻塞合并的 P0/P1，3 条修复到位；剩余 P2-1/P2-5/P2-6 已说明。
+- 修复后定向门禁：`corepack pnpm check` 0；`corepack pnpm -w exec vitest --run apps/web/src packages/ir` 10 files / 61 passed；focused `e2e/undo-copy-paste.spec.ts + e2e/controls.spec.ts + e2e/lod.spec.ts` **17 passed (15.2s)**；`git diff --check` 0；端口关闭。全量 e2e 收尾复跑：`E2E_EXIT=0`，52 tests / 50 passed + 2 skipped（2.1m）；此前 `91c186d` 的 finalgate 为 52 tests / 50 passed + 2 skipped。

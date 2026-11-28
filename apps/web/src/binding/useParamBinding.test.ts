@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ECHO_SUPPRESSION_MS,
   INITIAL_EVENT_WINDOW_MS,
+  RECONCILE_INTERVAL_MS,
   ParamBindingController,
   type BoundControl,
 } from './useParamBinding';
@@ -105,6 +106,33 @@ async function flush() {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+/** getParam 初值/补拉守卫：用可控 getParam + 注入时钟覆盖两种迟到顺序，不依赖 wall clock。 */
+function fakeDeferredClient(initial: ParamValue) {
+  const base = fakeClient();
+  const name = '/rosui_demo:gain';
+  const requests: Array<(value: ParamValue) => void> = [];
+  const result: ParamGetResult = { name, type: 'double', value: initial };
+  let queueGetParam = false;
+  base.client.getParam = () => {
+    if (!queueGetParam) return Promise.resolve(result);
+    return new Promise<ParamGetResult>((resolve) => {
+      requests.push((value) => resolve({ ...result, value }));
+    });
+  };
+  return {
+    ...base,
+    requests,
+    getParamCalls: () => requests.length,
+    deferGetParam() {
+      queueGetParam = true;
+    },
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('ParamBindingController', () => {
   it('连接后拉初值写入控件（init），不回灌 setParam，并订阅参数', async () => {
@@ -336,6 +364,116 @@ describe('ParamBindingController', () => {
     const before = c.values.length;
     f.emit('/rosui_demo:gain', 'oops');
     expect(c.values).toHaveLength(before);
+    controller.dispose();
+  });
+});
+
+describe('getParam 初值守卫（activate / refresh / warmup）', () => {
+  it('用户写入后才发 activate：迟到初值不能覆盖用户值', async () => {
+    const f = fakeDeferredClient(1);
+    f.deferGetParam();
+    const c = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({ client: f.client, onError: () => undefined });
+    controller.register('Gain', 'gain', c.control);
+    await f.client.connect();
+    await flush();
+    expect(f.getParamCalls()).toBe(1);
+
+    controller.onControlChange('Gain', 'gain', 9);
+    await flush();
+    f.requests[0]?.(1);
+    await flush();
+
+    expect(c.values.some((v) => v.origin === 'init')).toBe(false);
+    expect(c.values).toEqual([]);
+    expect(f.setCalls).toEqual([{ name: '/rosui_demo:gain', value: 9 }]);
+    controller.dispose();
+  });
+
+  it('激活请求已发、用户写入、补拉迟到：refreshOnce 不覆盖用户值', async () => {
+    vi.useFakeTimers();
+    let now = 1_000;
+    const f = fakeDeferredClient(1);
+    f.deferGetParam();
+    const c = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({
+      client: f.client,
+      onError: () => undefined,
+      now: () => now,
+    });
+    controller.register('Gain', 'gain', c.control);
+    await f.client.connect();
+    await flush();
+    f.requests[0]?.(1);
+    await flush();
+    expect(c.values.at(-1)).toEqual({ value: 1, origin: 'init' });
+
+    controller.onControlChange('Gain', 'gain', 9);
+    await flush();
+    // 300ms 首帧窗口结束后触发 refreshOnce（请求前 LKG=1，写已成功 LKG=9）。
+    now += INITIAL_EVENT_WINDOW_MS;
+    await vi.advanceTimersByTimeAsync(INITIAL_EVENT_WINDOW_MS);
+    await flush();
+    expect(f.getParamCalls()).toBe(2);
+
+    f.requests[1]?.(1);
+    await flush();
+    expect(c.values.at(-1)).toEqual({ value: 1, origin: 'init' });
+    expect(c.values.some((v) => v.value === 9)).toBe(false);
+    controller.dispose();
+  });
+
+  it('首帧窗口 warmup 补拉迟到：用户写入后不覆盖用户值', async () => {
+    vi.useFakeTimers();
+    const f = fakeDeferredClient(1);
+    f.deferGetParam();
+    const c = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({ client: f.client, onError: () => undefined });
+    controller.register('Gain', 'gain', c.control);
+    await f.client.connect();
+    await flush();
+    f.requests[0]?.(1);
+    await flush();
+
+    // 首帧窗口内收到外部事件，触发 warmup getParam。
+    f.emit('/rosui_demo:gain', 7);
+    await flush();
+    expect(f.getParamCalls()).toBe(2);
+    controller.onControlChange('Gain', 'gain', 9);
+    await flush();
+
+    f.requests[1]?.(1);
+    await flush();
+    expect(c.values.at(-1)).toEqual({ value: 1, origin: 'init' });
+    expect(c.values.some((v) => v.value === 9)).toBe(false);
+    controller.dispose();
+  });
+
+  it('stale activate 不建订阅：旧初值回声不能覆盖用户写入', async () => {
+    vi.useFakeTimers();
+    const f = fakeDeferredClient(1);
+    f.deferGetParam();
+    const c = fakeControl('Gain', 'gain');
+    const controller = new ParamBindingController({ client: f.client, onError: () => undefined });
+    controller.register('Gain', 'gain', c.control);
+    await f.client.connect();
+    await flush();
+
+    controller.onControlChange('Gain', 'gain', 9);
+    await flush();
+    // 用户写成功后迟到的旧初值判定 stale，本次 activation 直接结束。
+    f.requests[0]?.(1);
+    await flush();
+    expect(c.values).toEqual([]);
+    expect(f.setCalls).toEqual([{ name: '/rosui_demo:gain', value: 9 }]);
+    expect(f.listenerCount('/rosui_demo:gain')).toBe(0);
+
+    // stale activation 不能再开 warmup 窗口：后续 emit 旧值也不会覆盖用户值。
+    f.emit('/rosui_demo:gain', 1);
+    await vi.advanceTimersByTimeAsync(INITIAL_EVENT_WINDOW_MS + RECONCILE_INTERVAL_MS);
+    await flush();
+    expect(c.values).toEqual([]);
+    expect(f.setCalls).toEqual([{ name: '/rosui_demo:gain', value: 9 }]);
     controller.dispose();
   });
 });

@@ -306,6 +306,21 @@ export class ParamBindingController {
     this.pendingTimers.clear();
   }
 
+  /**
+   * 所有 getParam 回调共用的过期判定：请求发出后用户又写过、权威值已变更，
+   * 或仍在写后回声抑制窗口且返回值与当前值不同，都不能写回控件。
+   */
+  private isStaleGetParamResult(
+    entry: Entry,
+    writeSeqAtRequest: number,
+    lastKnownGoodAtRequest: ParamValue,
+    resultValue: ParamValue,
+  ): boolean {
+    if (entry.writeSeq !== writeSeqAtRequest) return true;
+    if (!sameValue(entry.lastKnownGood, lastKnownGoodAtRequest)) return true;
+    return this.now() < entry.echoUntil && !sameValue(resultValue, entry.lastKnownGood);
+  }
+
   private applyStatus(status: RosStatus): void {
     const connected = status === 'connected';
     if (connected) this.startReconcile();
@@ -327,27 +342,38 @@ export class ParamBindingController {
     entry.active = true;
     const token = ++entry.activateToken;
     const writeSeqAtRequest = entry.writeSeq;
+    const lastKnownGoodAtRequest = entry.lastKnownGood;
     const ref = entry.definition.ref;
+    // activation 成功且结果不过期时才建订阅/warmup：stale 时退出本次 activation，
+    // 否则迟到的 getParam 回声会借新开的 warmup 窗口覆盖用户值。
     void this.client.getParam(ref).then(
       (result) => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
         if (entry.activateToken !== token || !entry.active) return;
         // 拉初值期间用户已经改过值：用户输入优先，别被迟到的 getParam 覆盖。
-        if (entry.writeSeq !== writeSeqAtRequest) return;
+        if (
+          this.isStaleGetParamResult(entry, writeSeqAtRequest, lastKnownGoodAtRequest, result.value)
+        ) {
+          entry.active = false;
+          return;
+        }
         if (!matchesBindingType(result.value, entry.definition.valueType)) {
           entry.control.setReadonly(true);
+          entry.active = false;
           return;
         }
         // init 来源：只更新控件，不触发 setParam 回灌。
         entry.lastKnownGood = result.value;
         entry.control.setValue(result.value, 'init');
         entry.control.setReadonly(false);
+        this.armInitialSubscription(entry, token, ref);
       },
       () => {
         if (this.disposed || this.entries.get(entry.key) !== entry) return;
         // rosapi 忙/瞬断时 getParam 会失败：重试而不是把控件永久锁死。
         if (entry.retries >= 3) {
           entry.control.setReadonly(true);
+          entry.active = false;
           return;
         }
         entry.retries += 1;
@@ -361,28 +387,42 @@ export class ParamBindingController {
         }, retryDelay);
         this.pendingTimers.add(handle);
       },
-    ).finally(() => {
-      if (this.disposed || this.entries.get(entry.key) !== entry) return;
-      if (entry.activateToken !== token || !entry.active) return;
-      // 订阅在初值拉取完成后建立，首帧 300ms 窗口从此时开始。
-      entry.warmupUntil = this.now() + INITIAL_EVENT_WINDOW_MS;
-      entry.unsubscribe = this.client.subscribeParam(ref, (value) => this.onParamEvent(entry, value));
-      // 订阅建立前发生的外部改值不会补发事件（例如刚连上就被 ros2 param set）。
-      // 窗口结束后补拉一次权威值，保证 UI 最终收敛。
-      const handle = setTimeout(() => {
-        this.pendingTimers.delete(handle);
-        void this.refreshOnce(entry, token);
-      }, INITIAL_EVENT_WINDOW_MS);
-      this.pendingTimers.add(handle);
-    });
+    );
+  }
+
+  /** activation 结果有效时建立首帧订阅与一次性补拉；stale/failed 激活不调用。 */
+  private armInitialSubscription(
+    entry: Entry,
+    token: number,
+    ref: ParamBindingRef,
+  ): void {
+    if (this.disposed || this.entries.get(entry.key) !== entry) return;
+    if (entry.activateToken !== token || !entry.active) return;
+    // 订阅在初值拉取完成后建立，首帧 300ms 窗口从此时开始。
+    entry.warmupUntil = this.now() + INITIAL_EVENT_WINDOW_MS;
+    entry.unsubscribe = this.client.subscribeParam(ref, (value) => this.onParamEvent(entry, value));
+    // 订阅建立前发生的外部改值不会补发事件（例如刚连上就被 ros2 param set）。
+    // 窗口结束后补拉一次权威值，保证 UI 最终收敛。
+    const handle = setTimeout(() => {
+      this.pendingTimers.delete(handle);
+      void this.refreshOnce(entry, token);
+    }, INITIAL_EVENT_WINDOW_MS);
+    this.pendingTimers.add(handle);
   }
 
   /** 窗口结束后补拉一次权威值：只在与 lastKnownGood 不同时更新，避免把刚写进去的值又冲掉。 */
   private async refreshOnce(entry: Entry, token: number): Promise<void> {
+    const writeSeqAtRequest = entry.writeSeq;
+    const lastKnownGoodAtRequest = entry.lastKnownGood;
     const result = await this.client.getParam(entry.definition.ref).catch(() => null);
     if (!result) return;
     if (this.disposed || this.entries.get(entry.key) !== entry) return;
     if (entry.activateToken !== token || !entry.active) return;
+    if (
+      this.isStaleGetParamResult(entry, writeSeqAtRequest, lastKnownGoodAtRequest, result.value)
+    ) {
+      return;
+    }
     if (!matchesBindingType(result.value, entry.definition.valueType)) return;
     if (sameValue(result.value, entry.lastKnownGood)) return;
     entry.lastKnownGood = result.value;
@@ -406,10 +446,22 @@ export class ParamBindingController {
       // 否则「刚连上就被外部改值」的事件会被窗口吞掉，UI 永远停在初值。
       if (entry.warmupRefresh) return;
       entry.warmupRefresh = true;
+      const writeSeqAtRequest = entry.writeSeq;
+      const lastKnownGoodAtRequest = entry.lastKnownGood;
       void this.client.getParam(entry.definition.ref).then(
         (result) => {
           entry.warmupRefresh = false;
           if (this.disposed || this.entries.get(entry.key) !== entry || !entry.active) return;
+          if (
+            this.isStaleGetParamResult(
+              entry,
+              writeSeqAtRequest,
+              lastKnownGoodAtRequest,
+              result.value,
+            )
+          ) {
+            return;
+          }
           if (!matchesBindingType(result.value, entry.definition.valueType)) return;
           if (sameValue(result.value, entry.lastKnownGood)) return;
           entry.lastKnownGood = result.value;

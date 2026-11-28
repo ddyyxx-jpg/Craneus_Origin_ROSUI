@@ -327,6 +327,7 @@ export class ParamBindingController {
     entry.active = true;
     const token = ++entry.activateToken;
     const writeSeqAtRequest = entry.writeSeq;
+    const lastKnownGoodAtRequest = entry.lastKnownGood;
     const ref = entry.definition.ref;
     void this.client.getParam(ref).then(
       (result) => {
@@ -334,6 +335,9 @@ export class ParamBindingController {
         if (entry.activateToken !== token || !entry.active) return;
         // 拉初值期间用户已经改过值：用户输入优先，别被迟到的 getParam 覆盖。
         if (entry.writeSeq !== writeSeqAtRequest) return;
+        // 如果激活请求是在用户写入成功之后才发出的，writeSeq 已经相同；此时
+        // lastKnownGood 已变成用户值，迟到的 ROS 初值仍不能把它冲回去。
+        if (!sameValue(entry.lastKnownGood, lastKnownGoodAtRequest)) return;
         if (!matchesBindingType(result.value, entry.definition.valueType)) {
           entry.control.setReadonly(true);
           return;

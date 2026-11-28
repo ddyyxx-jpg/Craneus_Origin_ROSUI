@@ -7,6 +7,11 @@ import { loadGraph, serializeGraph, type LoadGraphResult } from './rete/serializ
 import { loadToast } from './loadToast';
 import { createNode, type RosuiNode } from './rete/nodes';
 import type { ParamBindingRef, ParamValue, RosStatus } from './ros';
+import { AppShell } from './ui/AppShell';
+import { BottomPanel } from './ui/BottomPanel';
+import { EditorTabs } from './ui/EditorTabs';
+import { Explorer, WORKSPACE_ROOTS } from './ui/Explorer';
+import { StatusBar } from './ui/StatusBar';
 import { getSharedClient } from './ros';
 import { createControlAdapter } from './binding/controlAdapter';
 import { useParamBinding } from './binding/useParamBinding';
@@ -80,6 +85,7 @@ export function App() {
   const [url, setUrl] = useState('ws://127.0.0.1:9090');
   const [selectedPort, setSelectedPort] = useState<SelectedPort | null>(null);
   const [localToast, setLocalToast] = useState('');
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(WORKSPACE_ROOTS[0]?.id ?? 'nav2027_ws');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // T-032：历史/剪贴板放在 ref 里，状态变化不触发画布 effect 重建。
@@ -324,6 +330,13 @@ export function App() {
 
   const statusClass = `ros-status ros-status--${binding.status}`;
   const connected = binding.status === 'connected';
+  const activeWorkspace =
+    WORKSPACE_ROOTS.find((root) => root.id === activeWorkspaceId) ?? WORKSPACE_ROOTS[0];
+  const irGraph = graph ?? (handleRef.current ? toGraphIR(handleRef.current) : null);
+  const graphCounts = {
+    nodes: irGraph?.nodes.length ?? 0,
+    edges: irGraph?.edges.length ?? 0,
+  };
 
   const { bind, unbind } = binding;
   /** 动态新增的节点也要注册进绑定层，否则参数浏览器能「绑定成功」但实际没有订阅。 */
@@ -679,180 +692,219 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [copySelection, pasteSelection, redoHistory, undoHistory]);
 
-  return (
-    <div className="app">
-      <header className="toolbar">
-        <strong>ROSUI</strong>
-        <span className="status" data-testid="canvas-status" data-state={ready ? 'ready' : 'loading'}>
-          {message}
-        </span>
-        <span className="status" data-testid="gain-readout">
-          {lastGain === null ? '增益：—' : `增益：${lastGain}`}
-        </span>
-        <input
-          className="ros-url"
-          aria-label="rosbridge 地址"
-          data-testid="ros-url"
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-          disabled={connected || binding.status === 'connecting'}
-        />
-        <button
-          type="button"
-          data-testid="ros-connect"
-          disabled={connected || binding.status === 'connecting'}
-          onClick={() => {
-            void binding.connect(url);
-          }}
-        >
-          连接
-        </button>
-        <button
-          type="button"
-          data-testid="ros-disconnect"
-          disabled={!connected}
-          onClick={() => binding.disconnect()}
-        >
-          断开
-        </button>
-        <span
-          className={statusClass}
-          data-testid="ros-status"
-          data-status={binding.status}
-          data-detail={`${binding.status}:${binding.statusDetail}`}
-        >
-          {STATUS_TEXT[binding.status]}
-        </span>
-        <button
-          type="button"
-          data-testid="add-gain"
-          disabled={!ready}
-          onClick={() => {
-            const editorHandle = handleRef.current;
-            if (!editorHandle) return;
-            void addNode(editorHandle, 'gain', 300, 520, onValue).then((node) => {
-              registerDynamic(node);
-              refresh();
-            });
-          }}
-        >
-          + Gain
-        </button>
-        <button
-          type="button"
-          data-testid="add-pose"
-          disabled={!ready}
-          onClick={() => {
-            const editorHandle = handleRef.current;
-            if (!editorHandle) return;
-            // M3：Pose 不在默认 5 节点里，点按钮加到画布空白处并注册绑定。
-            const node = createNode('pose', onValue);
-            const count = editorHandle.editor.getNodes().length;
-            void editorHandle.editor.addNode(node).then(() =>
-              editorHandle.area.translate(node.id, { x: 300 + count * 30, y: 520 + count * 20 }),
-            );
-            const adapter = createControlAdapter({
-              nodeType: node.spec.type,
-              portKey: node.spec.inputKey,
-              nodeId: node.id,
-              control: node.control,
-              onUserChange: handleUserChange,
-            });
-            allUnregisters.current.push(
-              binding.register(
-                'Pose',
-                'pose',
-                {
-                  ...adapter,
-                  setValue(value, origin) {
-                    adapter.setValue(value, origin);
-                    refresh();
-                  },
-                },
-                node.id,
-              ),
-            );
+  const toolbar = (
+    <header className="toolbar">
+      <strong>ROSUI</strong>
+      <span className="status" data-testid="canvas-status" data-state={ready ? 'ready' : 'loading'}>
+        {message}
+      </span>
+      <span className="status" data-testid="gain-readout">
+        {lastGain === null ? '增益：—' : `增益：${lastGain}`}
+      </span>
+      <input
+        className="ros-url"
+        aria-label="rosbridge 地址"
+        data-testid="ros-url"
+        value={url}
+        onChange={(event) => setUrl(event.target.value)}
+        disabled={connected || binding.status === 'connecting'}
+      />
+      <button
+        type="button"
+        data-testid="ros-connect"
+        disabled={connected || binding.status === 'connecting'}
+        onClick={() => {
+          void binding.connect(url);
+        }}
+      >
+        连接
+      </button>
+      <button
+        type="button"
+        data-testid="ros-disconnect"
+        disabled={!connected}
+        onClick={() => binding.disconnect()}
+      >
+        断开
+      </button>
+      <span
+        className={statusClass}
+        data-testid="ros-status"
+        data-status={binding.status}
+        data-detail={`${binding.status}:${binding.statusDetail}`}
+      >
+        {STATUS_TEXT[binding.status]}
+      </span>
+      <button
+        type="button"
+        data-testid="add-gain"
+        disabled={!ready}
+        onClick={() => {
+          const editorHandle = handleRef.current;
+          if (!editorHandle) return;
+          void addNode(editorHandle, 'gain', 300, 520, onValue).then((node) => {
+            registerDynamic(node);
             refresh();
-          }}
-        >
-          + Pose
-        </button>
-        <button
-          type="button"
-          data-testid="add-inspector"
-          disabled={!ready}
-          onClick={() => {
-            const editorHandle = handleRef.current;
-            if (!editorHandle) return;
-            void addNode(editorHandle, 'inspector', 300, 700, onValue).then(() => refresh());
-          }}
-        >
-          + Inspector
-        </button>
-        <button
-          type="button"
-          data-testid="add-script"
-          disabled={!ready}
-          onClick={() => {
-            const editorHandle = handleRef.current;
-            if (!editorHandle) return;
-            void addNode(editorHandle, 'script', 600, 700, onValue).then((node) => {
-              registerDynamic(node);
-              refresh();
-            });
-          }}
-        >
-          + Script
-        </button>
-        <button
-          type="button"
-          data-testid="save-graph"
-          disabled={!ready}
-          onClick={handleSaveGraph}
-        >
-          保存图
-        </button>
-        <button
-          type="button"
-          data-testid="load-graph"
-          disabled={!ready}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          加载图
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="graph-file-input"
-          data-testid="load-graph-input"
-          accept=".json,.rosui.json,application/json"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void handleLoadGraph(file);
-            event.target.value = '';
-          }}
-        />
-      </header>
-      {binding.toast || localToast ? (
-        <div className="ros-toast" data-testid="ros-toast" role="alert">
-          {binding.toast || localToast}
-        </div>
-      ) : null}
-      <div className="workspace">
-        <div ref={canvasRef} className="canvas" />
-        <ParamBrowser
-          client={getSharedClient()}
-          status={binding.status}
-          selected={selectedPort}
-          onBind={handleBind}
-          onUnbind={handleUnbind}
-          onTypeReject={handleTypeReject}
-        />
-        <aside className="ir-panel">
-          <div className="ir-title">当前 IR（只读）</div>
-          <CurrentIR graph={graph} />
-        </aside>
-      </div>
+          });
+        }}
+      >
+        + Gain
+      </button>
+      <button
+        type="button"
+        data-testid="add-pose"
+        disabled={!ready}
+        onClick={() => {
+          const editorHandle = handleRef.current;
+          if (!editorHandle) return;
+          // M3：Pose 不在默认 5 节点里，点按钮加到画布空白处并注册绑定。
+          const node = createNode('pose', onValue);
+          const count = editorHandle.editor.getNodes().length;
+          void editorHandle.editor.addNode(node).then(() =>
+            editorHandle.area.translate(node.id, { x: 300 + count * 30, y: 520 + count * 20 }),
+          );
+          const adapter = createControlAdapter({
+            nodeType: node.spec.type,
+            portKey: node.spec.inputKey,
+            nodeId: node.id,
+            control: node.control,
+            onUserChange: handleUserChange,
+          });
+          allUnregisters.current.push(
+            binding.register(
+              'Pose',
+              'pose',
+              {
+                ...adapter,
+                setValue(value, origin) {
+                  adapter.setValue(value, origin);
+                  refresh();
+                },
+              },
+              node.id,
+            ),
+          );
+          refresh();
+        }}
+      >
+        + Pose
+      </button>
+      <button
+        type="button"
+        data-testid="add-inspector"
+        disabled={!ready}
+        onClick={() => {
+          const editorHandle = handleRef.current;
+          if (!editorHandle) return;
+          void addNode(editorHandle, 'inspector', 300, 700, onValue).then(() => refresh());
+        }}
+      >
+        + Inspector
+      </button>
+      <button
+        type="button"
+        data-testid="add-script"
+        disabled={!ready}
+        onClick={() => {
+          const editorHandle = handleRef.current;
+          if (!editorHandle) return;
+          void addNode(editorHandle, 'script', 600, 700, onValue).then((node) => {
+            registerDynamic(node);
+            refresh();
+          });
+        }}
+      >
+        + Script
+      </button>
+      <button
+        type="button"
+        data-testid="save-graph"
+        disabled={!ready}
+        onClick={handleSaveGraph}
+      >
+        保存图
+      </button>
+      <button
+        type="button"
+        data-testid="load-graph"
+        disabled={!ready}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        加载图
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="graph-file-input"
+        data-testid="load-graph-input"
+        accept=".json,.rosui.json,application/json"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) void handleLoadGraph(file);
+          event.target.value = '';
+        }}
+      />
+    </header>
+  );
+
+  const toast = binding.toast || localToast ? (
+    <div className="ros-toast" data-testid="ros-toast" role="alert">
+      {binding.toast || localToast}
     </div>
+  ) : null;
+
+  const irPanel = (
+    <aside className="ir-panel">
+      <div className="ir-title">当前 IR（只读）</div>
+      <CurrentIR graph={graph} />
+    </aside>
+  );
+
+  return (
+    <AppShell
+      topBar={toolbar}
+      explorer={
+        <Explorer
+          roots={WORKSPACE_ROOTS}
+          activeId={activeWorkspaceId}
+          onSelect={setActiveWorkspaceId}
+        />
+      }
+      editor={
+        <EditorTabs
+          graph={<div ref={canvasRef} className="canvas" />}
+          ir={
+            <div className="editor-ir-note" data-testid="editor-ir-note">
+              只读 IR 已移至右侧 Inspector 常驻显示。
+            </div>
+          }
+        />
+      }
+      inspector={
+        <>
+          <ParamBrowser
+            client={getSharedClient()}
+            status={binding.status}
+            selected={selectedPort}
+            onBind={handleBind}
+            onUnbind={handleUnbind}
+            onTypeReject={handleTypeReject}
+          />
+          {irPanel}
+        </>
+      }
+      bottom={<BottomPanel />}
+      status={
+        <StatusBar
+          rosStatus={STATUS_TEXT[binding.status]}
+          canvasStatus={ready ? '就绪' : message}
+          workspace={activeWorkspace?.label ?? '—'}
+          nodeCount={graphCounts.nodes}
+          edgeCount={graphCounts.edges}
+        />
+      }
+    >
+      {toast}
+    </AppShell>
   );
 }

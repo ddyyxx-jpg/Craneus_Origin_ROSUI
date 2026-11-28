@@ -220,6 +220,13 @@
 - 反馈闭环：AC-4 预警的 stale connected 缺口已补 `apps/web/src/ros/RosClient.ts` `transport.on('close', () => this.handleTransportClose(generation))` + `App.tsx` `data-detail` + `RosClient.test.ts` 新单测，未弱化验收口径。
 - 门禁：build/check 0、vitest 52、全量 e2e 46 passed + 2 skipped `EXIT=0`、`ROSUI_PERF=1` 2 passed、AC-5 脚本 `EXIT=0`（perf 浮点边界加 1e-6 容差后复跑通过）。
 
+### T-034 M6 Phase 1 UI Shell ✅ 已完成
+- owner: A ｜ scope: `apps/web/src/ui/**`、`apps/web/src/App.tsx`、`apps/web/src/styles.css`、`apps/web/src/binding/useParamBinding.ts`、`e2e/workspace-shell.spec.ts`
+- 落地：AppShell/Explorer/EditorTabs/BottomPanel/StatusBar + Inspector；保留 toolbar、history、save/load、快捷键、binding 与初始 5 节点 + 1 连线；`.editor-pane-graph { display:flex }` 修复画布高度 0 的点击命中；IR 从 overlay 移到 Inspector；`useParamBinding` 增加 `lastKnownGoodAtRequest` 初值覆盖竞态守卫。
+- 验收：55 条 e2e / 53 passed + 2 skipped（perf 默认跳过，2.3m）；`workspace-shell` 3/3、controls 9/9；`ROSUI_PERF=1` 2 passed（full 679.2ms / placeholder 272.4ms）；build/check/vitest 61/diff 全 0。
+- 审查：独立只读 review 无 P0/P1；P2-1/P2-2/P2-3 已处置（IR tab note/ARIA/视口高度），P2-4/P2-5 留 Phase 2；详见 `docs/reviews/M6-phase1-acceptance.md`。
+- 后续：D2/D8 默认解释待用户确认；Phase 2 接 workspace agent、真实文件树与参数/驱动/话题 introspection。
+
 ## 依赖图（ASCII）
 
 ```

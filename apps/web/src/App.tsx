@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getUID } from 'rete';
 import type { GraphIR } from '@rosui/ir';
 import { CurrentIR } from './controls';
 import { createEditor, addNode, connect, toGraphIR, type EditorHandle } from './rete/editor';
@@ -9,9 +10,28 @@ import type { ParamBindingRef, ParamValue, RosStatus } from './ros';
 import { getSharedClient } from './ros';
 import { createControlAdapter } from './binding/controlAdapter';
 import { useParamBinding } from './binding/useParamBinding';
-import { controlValueType, typesCompatible, type BindingValueType } from './binding/bindings';
+import {
+  clearRuntimeBinding,
+  controlValueType,
+  listRuntimeBindings,
+  typesCompatible,
+  type BindingValueType,
+} from './binding/bindings';
 import { ParamBrowser, type SelectedPort } from './ParamBrowser';
 import { formatFailure, type FailureInput } from './toast';
+import {
+  createClipboard,
+  createSnapshotState,
+  pasteGraph,
+  pushSnapshot,
+  redo as redoSnapshot,
+  undo as undoSnapshot,
+  type ClipboardData,
+  type SnapshotState,
+} from './rete/history';
+
+const AUTO_COMMIT_DELAY_MS = 80;
+const SCRIPT_COMMIT_EVENT = 'rosui:script-committed';
 
 function snapshot(handle: EditorHandle | null): GraphIR | null {
   return handle ? toGraphIR(handle) : null;
@@ -25,6 +45,31 @@ const STATUS_TEXT: Record<RosStatus, string> = {
   error: '连接错误',
 };
 
+interface HistoryDevApi {
+  commitHistory(): void;
+  undoHistory(): Promise<void>;
+  redoHistory(): Promise<void>;
+  copySelection(): void;
+  pasteSelection(): Promise<void>;
+  getHistoryState(): { undo: number; redo: number };
+}
+
+/** 画布重建前清掉全局运行期绑定表，避免旧节点 id 把静态绑定误渲染成 runtime。 */
+function clearAllRuntimeBindings(): void {
+  for (const { nodeType, portKey, instanceId } of listRuntimeBindings()) {
+    clearRuntimeBinding(nodeType, portKey, instanceId);
+  }
+}
+
+/** T-032：输入框/脚本区聚焦时不抢浏览器原生快捷键。 */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(
+    target.closest('input, textarea, select, [contenteditable="true"], [data-testid^="pose-"]'),
+  );
+}
+
 export function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<EditorHandle | null>(null);
@@ -37,18 +82,90 @@ export function App() {
   const [localToast, setLocalToast] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // T-032：历史/剪贴板放在 ref 里，状态变化不触发画布 effect 重建。
+  const historyRef = useRef<SnapshotState>(createSnapshotState());
+  const clipboardRef = useRef<ClipboardData | null>(null);
+  const restoringRef = useRef(false);
+  const lastCommittedRef = useRef('');
+  const autoCommitTimerRef = useRef<number | undefined>(undefined);
+  const historyQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const devApiRef = useRef<HistoryDevApi | null>(null);
+
   // M5：错误提示统一经此出口，失败类传 FailureInput，成功/清空类直接传字符串。
   const pushToast = useCallback((message: FailureInput | string): void => {
     setLocalToast(typeof message === 'string' ? message : formatFailure(message));
   }, []);
 
   const binding = useParamBinding();
+  const { dismissToast } = binding;
   // M3/M5：所有节点的 unregister 都收进 allUnregisters，加载前统一清空，避免旧订阅泄漏。
   const allUnregisters = useRef<Array<() => void>>([]);
 
   const refresh = useCallback(() => {
     setGraph(snapshot(handleRef.current));
   }, []);
+
+  /** 无差别把当前图推入 undo 栈；显式 DEV commit 与加载/粘贴后的强制提交都走这里。 */
+  const commitCurrentGraph = useCallback((): void => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const ir = serializeGraph(editorHandle);
+    historyRef.current = pushSnapshot(historyRef.current, ir);
+    lastCommittedRef.current = JSON.stringify(ir);
+    refresh();
+  }, [refresh]);
+
+  /**
+   * 自动提交只更新 ref 中的历史栈，不 setGraph：200 节点批量建图时，
+   * CurrentIR 对整张图 JSON.stringify 的 React 重渲染会把 LOD 首帧拖慢数秒。
+   * IR 面板仍由用户改值 onValue / 程序写值 setValue / 加载与恢复路径显式 refresh。
+   */
+  const commitGraphIfChanged = useCallback((): void => {
+    if (restoringRef.current) return;
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const ir = serializeGraph(editorHandle);
+    const serialized = JSON.stringify(ir);
+    if (serialized === lastCommittedRef.current) return;
+    historyRef.current = pushSnapshot(historyRef.current, ir);
+    lastCommittedRef.current = serialized;
+  }, []);
+
+  const commitHistory = useCallback((): void => {
+    if (restoringRef.current) return;
+    commitCurrentGraph();
+  }, [commitCurrentGraph]);
+
+  const initialiseHistory = useCallback((): void => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const ir = serializeGraph(editorHandle);
+    historyRef.current = pushSnapshot(createSnapshotState(), ir);
+    lastCommittedRef.current = JSON.stringify(ir);
+  }, []);
+
+  /**
+   * 自动提交：Rete 结构事件、拖动结束、控件合法改值都可能连续触发；
+   * 80ms 合并 + JSON 去重，确保每个用户动作只形成一条历史边界。
+   */
+  const scheduleGraphCommit = useCallback(
+    (immediate = false): void => {
+      if (restoringRef.current) return;
+      if (autoCommitTimerRef.current !== undefined) {
+        window.clearTimeout(autoCommitTimerRef.current);
+        autoCommitTimerRef.current = undefined;
+      }
+      if (immediate) {
+        commitGraphIfChanged();
+        return;
+      }
+      autoCommitTimerRef.current = window.setTimeout(() => {
+        autoCommitTimerRef.current = undefined;
+        commitGraphIfChanged();
+      }, AUTO_COMMIT_DELAY_MS);
+    },
+    [commitGraphIfChanged],
+  );
 
   const onValue = useCallback(
     (node: { spec: { type: string } }, value: unknown) => {
@@ -62,9 +179,11 @@ export function App() {
   const { onControlChange } = binding;
   const handleUserChange = useCallback(
     (nodeType: string, portKey: string, value: ParamValue, nodeId?: string) => {
+      if (restoringRef.current) return;
       onControlChange(nodeType, portKey, value, nodeId);
+      scheduleGraphCommit();
     },
-    [onControlChange],
+    [onControlChange, scheduleGraphCommit],
   );
 
   // M4 A: Rete 的 nodepicked 事件在画布点击节点标题/控件区时触发，记录当前选中端口。
@@ -93,9 +212,10 @@ export function App() {
         }
         handle = created;
         handleRef.current = created;
-        if (import.meta.env.DEV) {
-          // e2e 用：让 Playwright 能删连线，验证「断线后控件恢复」
-          (window as unknown as { __rosui?: EditorHandle }).__rosui = created;
+        if (import.meta.env.DEV && devApiRef.current) {
+          // e2e 用：既有 EditorHandle 能力 + T-032 历史/剪贴板 DEV API。
+          const devHandle = Object.assign(created, devApiRef.current);
+          (window as unknown as { __rosui?: EditorHandle & HistoryDevApi }).__rosui = devHandle;
         }
 
         const gain = await addNode(created, 'gain', 140, 120, onValue);
@@ -138,6 +258,26 @@ export function App() {
         setReady(true);
         setMessage('就绪 — 5 个节点（Gain/Threshold/Label/Mode/Switch），1 条连线。');
         setGraph(snapshot(created));
+        initialiseHistory();
+
+        // T-032：初始图建成后才挂自动提交管道，避免初始化过程被当成用户动作。
+        created.editor.addPipe((context) => {
+          if (
+            context.type === 'nodecreated' ||
+            context.type === 'noderemoved' ||
+            context.type === 'connectioncreated' ||
+            context.type === 'connectionremoved' ||
+            context.type === 'cleared'
+          ) {
+            scheduleGraphCommit();
+          }
+          return context;
+        });
+        created.area.addPipe((context) => {
+          // nodedragged 由 Rete 在节点拖拽 pointerup 时发出，不用逐帧的 nodetranslated。
+          if (context.type === 'nodedragged') scheduleGraphCommit();
+          return context;
+        });
       })
       .catch((error: unknown) => {
         setMessage(`画布错误：${error instanceof Error ? error.message : String(error)}`);
@@ -145,12 +285,42 @@ export function App() {
 
     return () => {
       disposed = true;
+      if (autoCommitTimerRef.current !== undefined) {
+        window.clearTimeout(autoCommitTimerRef.current);
+        autoCommitTimerRef.current = undefined;
+      }
       for (const unregister of allUnregisters.current) unregister();
       allUnregisters.current.length = 0;
       handle?.destroy();
       handleRef.current = null;
     };
-  }, [binding.register, handleUserChange, onValue, refresh, selectNode]);
+  }, [
+    binding.register,
+    handleUserChange,
+    initialiseHistory,
+    onValue,
+    refresh,
+    scheduleGraphCommit,
+    selectNode,
+  ]);
+
+  useEffect(() => {
+    const onScriptCommitted = (event: Event): void => {
+      if (event instanceof CustomEvent && typeof event.detail === 'string') {
+        // Script 代码不在控件 onChange 上：用节点 id 精确定位并串行化当前值。
+        const editorHandle = handleRef.current;
+        const node = editorHandle?.editor.getNode(event.detail);
+        if (node && (node as RosuiNode).toParamBinding) {
+          // ScriptNode.toParamBinding() 从 data.code 读取，广播发生前 data.run() 已写入 code。
+          scheduleGraphCommit();
+        }
+        return;
+      }
+      scheduleGraphCommit();
+    };
+    window.addEventListener(SCRIPT_COMMIT_EVENT, onScriptCommitted);
+    return () => window.removeEventListener(SCRIPT_COMMIT_EVENT, onScriptCommitted);
+  }, [scheduleGraphCommit]);
 
   const statusClass = `ros-status ros-status--${binding.status}`;
   const connected = binding.status === 'connected';
@@ -195,13 +365,12 @@ export function App() {
 
   /**
    * M5 二轮 P1-A：注册控件 + 恢复运行期绑定收进同一个函数。
-   * 成功加载与快照回滚都调用，保证 IR 中 mode:'runtime' 的绑定在重建后仍订阅 ROS。
-   * registerDynamic 完成后静态表已就绪；bind() 只登记订阅，未连接 ROS 时不下发值。
-   * 返回未能恢复的绑定数量，由调用方决定是否展示绑定失败提示。
+   * T-032：重建画布前先清掉全部 RUNTIME_BINDINGS，静态副本不会被旧 id 误判为 runtime。
+   * 成功加载、快照回滚与 undo/redo 都调用，保证 IR 中 mode:'runtime' 的绑定在重建后仍订阅 ROS。
    */
   const restoreGraphBindings = useCallback(
     (result: LoadGraphResult): number => {
-      // 先清掉旧图/失败图残留的注册，再按新节点重建，避免订阅指向已移除的实例。
+      clearAllRuntimeBindings();
       clearDynamicRegistrations();
       for (const node of result.nodes) registerDynamic(node);
       let failedBindings = 0;
@@ -235,10 +404,16 @@ export function App() {
 
   // 加载主流程：JSON → IR → 画布。
   // restoreSnapshot: clear() 前拍快照，任何中途失败都用 serializeGraph 快照重建旧图。
+  // T-032：加载期间 suppressing 自动历史/控件回灌；成功后强制提交一条边界。
   const loadGraphInternal = useCallback(
-    async (editorHandle: EditorHandle, ir: unknown, restoreSnapshot: boolean): Promise<void> => {
+    async (editorHandle: EditorHandle, ir: unknown, restoreSnapshot: boolean): Promise<boolean> => {
       const before = restoreSnapshot ? serializeGraph(editorHandle) : null;
       let cleared = false;
+      restoringRef.current = true;
+      if (autoCommitTimerRef.current !== undefined) {
+        window.clearTimeout(autoCommitTimerRef.current);
+        autoCommitTimerRef.current = undefined;
+      }
       try {
         // 先停掉旧节点的所有订阅，再清画布；新节点按恢复后的类型重新注册。
         clearDynamicRegistrations();
@@ -251,6 +426,8 @@ export function App() {
         refresh();
         // P2-A：绑定失败与脚本来源提示合并展示，不再互相覆盖。
         pushToast(loadToast(failedBindings, result.scriptCodeCount));
+        commitCurrentGraph();
+        return true;
       } catch (error: unknown) {
         if (cleared && restoreSnapshot && before) {
           try {
@@ -266,7 +443,8 @@ export function App() {
             setGraph(null);
             setSelectedPort(null);
             setLastGain(null);
-            return;
+            lastCommittedRef.current = JSON.stringify(serializeGraph(editorHandle));
+            return false;
           }
         }
         // 回滚本身失败时 toast 保持「画布已重置」兜底；成功回滚时最终 toast 必须是「加载失败：…」，
@@ -274,9 +452,13 @@ export function App() {
         pushToast({ kind: 'load', reason: error instanceof Error ? error.message : String(error) });
         // 校验失败时画布未动，但 graph/selectedPort/lastGain 可能与画布不同步，统一刷新。
         refresh();
+        lastCommittedRef.current = JSON.stringify(serializeGraph(editorHandle));
+        return false;
+      } finally {
+        restoringRef.current = false;
       }
     },
-    [clearDynamicRegistrations, refresh, restoreGraphBindings, pushToast],
+    [clearDynamicRegistrations, commitCurrentGraph, refresh, restoreGraphBindings, pushToast],
   );
 
   const handleLoadGraph = useCallback(
@@ -311,6 +493,107 @@ export function App() {
     [loadGraphInternal, pushToast],
   );
 
+  /** T-032 undo/redo/粘贴共用的静默重建：不 toast、不自动入栈、不回灌 ROS。 */
+  const restoreGraphSilently = useCallback(
+    async (ir: GraphIR): Promise<boolean> => {
+      const editorHandle = handleRef.current;
+      if (!editorHandle) return false;
+      restoringRef.current = true;
+      if (autoCommitTimerRef.current !== undefined) {
+        window.clearTimeout(autoCommitTimerRef.current);
+        autoCommitTimerRef.current = undefined;
+      }
+      try {
+        clearDynamicRegistrations();
+        const result = await loadGraph(editorHandle, ir);
+        restoreGraphBindings(result);
+        editorHandle.clearNodeSelection();
+        setSelectedPort(null);
+        setLastGain(null);
+        setLocalToast('');
+        dismissToast();
+        refresh();
+        lastCommittedRef.current = JSON.stringify(serializeGraph(editorHandle));
+        return true;
+      } catch (error: unknown) {
+        pushToast({ kind: 'load', reason: error instanceof Error ? error.message : String(error) });
+        refresh();
+        return false;
+      } finally {
+        restoringRef.current = false;
+      }
+    },
+    [clearDynamicRegistrations, dismissToast, refresh, restoreGraphBindings, pushToast],
+  );
+
+  /** 串行执行 undo/redo/粘贴，避免两次异步 loadGraph 同时重建画布。 */
+  const enqueueHistoryAction = useCallback(
+    (action: () => Promise<void>): Promise<void> => {
+      const run = async (): Promise<void> => {
+        // 80ms 内紧接着按快捷键时，先把待提交改动定稿，再算 undo 栈，避免丢失边界。
+        commitGraphIfChanged();
+        if (autoCommitTimerRef.current !== undefined) {
+          window.clearTimeout(autoCommitTimerRef.current);
+          autoCommitTimerRef.current = undefined;
+        }
+        await action();
+      };
+      const next = historyQueueRef.current.then(run, run);
+      historyQueueRef.current = next.catch(() => undefined);
+      return historyQueueRef.current;
+    },
+    [commitGraphIfChanged],
+  );
+
+  const undoHistory = useCallback(
+    (): Promise<void> =>
+      enqueueHistoryAction(async () => {
+        const previousState = historyRef.current;
+        const step = undoSnapshot(previousState);
+        if (!step.ir) return;
+        const restored = await restoreGraphSilently(step.ir);
+        historyRef.current = restored ? step.state : previousState;
+      }),
+    [enqueueHistoryAction, restoreGraphSilently],
+  );
+
+  const redoHistory = useCallback(
+    (): Promise<void> =>
+      enqueueHistoryAction(async () => {
+        const previousState = historyRef.current;
+        const step = redoSnapshot(previousState);
+        if (!step.ir) return;
+        const restored = await restoreGraphSilently(step.ir);
+        historyRef.current = restored ? step.state : previousState;
+      }),
+    [enqueueHistoryAction, restoreGraphSilently],
+  );
+
+  const copySelection = useCallback((): void => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return;
+    const ir = serializeGraph(editorHandle);
+    const ids = new Set(editorHandle.getSelectedNodeIds());
+    clipboardRef.current = createClipboard(ir, ids);
+  }, []);
+
+  const pasteSelection = useCallback(
+    (): Promise<void> =>
+      enqueueHistoryAction(async () => {
+        const editorHandle = handleRef.current;
+        const clipboard = clipboardRef.current;
+        if (!editorHandle || !clipboard || clipboard.nodes.length === 0) return;
+        const base = serializeGraph(editorHandle);
+        const pasted = pasteGraph(base, clipboard, getUID);
+        if (!(await restoreGraphSilently(pasted.ir))) return;
+        editorHandle.setSelectedNodeIds(pasted.newIds);
+        setSelectedPort(null);
+        setLastGain(null);
+        commitCurrentGraph();
+      }),
+    [commitCurrentGraph, enqueueHistoryAction, restoreGraphSilently],
+  );
+
   const handleBind = useCallback(
     (ref: ParamBindingRef, valueType: BindingValueType) => {
       if (!selectedPort) return;
@@ -330,21 +613,66 @@ export function App() {
           : { kind: 'bind', param: `${selectedPort.nodeType}.${selectedPort.portKey}`, reason: '未注册到绑定层，绑定已回滚' },
       );
       refresh();
+      scheduleGraphCommit(true);
     },
-    [bind, selectedPort, refresh, pushToast],
+    [bind, selectedPort, refresh, pushToast, scheduleGraphCommit],
   );
   const handleUnbind = useCallback(
     () => {
       if (!selectedPort) return;
       unbind(selectedPort.nodeType, selectedPort.portKey, selectedPort.instanceId);
       refresh();
+      scheduleGraphCommit(true);
     },
-    [unbind, selectedPort, refresh],
+    [unbind, selectedPort, refresh, scheduleGraphCommit],
   );
   const handleTypeReject = useCallback(
     (reason: string, param?: string) => pushToast({ kind: 'validate', param, reason }),
     [pushToast],
   );
+
+  // DEV API 在渲染期写入 ref；编辑器 effect 执行时已可用，且不进入依赖数组触发重建。
+  devApiRef.current = {
+    commitHistory: () => commitHistory(),
+    undoHistory: () => undoHistory(),
+    redoHistory: () => redoHistory(),
+    copySelection: () => copySelection(),
+    pasteSelection: () => pasteSelection(),
+    getHistoryState: () => ({
+      undo: historyRef.current.undo.length,
+      redo: historyRef.current.redo.length,
+    }),
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;
+      if (isEditableTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) void redoHistory();
+        else void undoHistory();
+        return;
+      }
+      if (key === 'y') {
+        event.preventDefault();
+        void redoHistory();
+        return;
+      }
+      if (key === 'c') {
+        event.preventDefault();
+        copySelection();
+        return;
+      }
+      if (key === 'v') {
+        event.preventDefault();
+        void pasteSelection();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [copySelection, pasteSelection, redoHistory, undoHistory]);
 
   return (
     <div className="app">

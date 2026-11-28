@@ -33,6 +33,10 @@ export interface EditorHandle {
   setZoom: (zoom: number) => Promise<void>;
   /** P2-C：点空白/应用重置选中端口时清除节点视觉选中态。 */
   clearNodeSelection: () => void;
+  /** T-032：返回当前选中节点 id 的副本数组。 */
+  getSelectedNodeIds: () => string[];
+  /** T-032：用给定 id 覆盖选中集合（仅保留图中真实存在的 id），并重放高亮。 */
+  setSelectedNodeIds: (ids: readonly string[]) => void;
   /** DEV/e2e 专用：按生产 addNode 路径添加单个节点（不在 UI 暴露）。 */
   addNodeKind: (kind: NodeKind, x: number, y: number) => Promise<RosuiNode>;
 }
@@ -97,57 +101,96 @@ export async function createEditor(
   /**
    * 二轮评审 P2-C：本应用的“选中”是端口选择语义（nodepicked → App.selectNode → selectedPort），
    * Rete 的 node.selected 不会被 selectableNodes 写入。这里在 nodepicked 管道同步把选中态
-   * 写到节点 DOM 的 class/data-selected，并清掉其它节点；full（styled-components）和
-   * placeholder（styles.css）都识别同一组标记，不再依赖 node.selected。
+   * 写到节点 DOM 的 class/data-selected；full（styled-components）和 placeholder（styles.css）
+   * 都识别同一组标记，不再依赖 node.selected。
+   * T-032：改为按 id 集合标记，兼容多选；仍然是轻量 DOM 桥接，不调用 area.update。
+   * 单个节点标记是 render 热路径，必须 O(1) 只处理当前节点，否则 200 节点批量建图时
+   * 每次全图扫描会把 LOD placeholder 首帧拖成 O(n²)；全图扫描只留给显式改选中集合/缩放切换。
    */
-  const markSelectedNode = (id: string | null): void => {
-    for (const node of editor.getNodes()) {
-      const element = area.nodeViews.get(node.id)?.element;
-      if (!element) continue;
-      // classic preset 的根节点就是 [data-testid=node]（非 .node-shell）；
-      // placeholder/自定义节点才用 .node-shell。两者都直接标记容器，不调用
-      // area.update，避免 React 重渲染把 DOM 标记冲掉。
-      const targets: HTMLElement[] = [];
-      const testNode = element.querySelector<HTMLElement>('[data-testid="node"]');
-      if (testNode) targets.push(testNode);
-      const shells = Array.from(element.querySelectorAll<HTMLElement>('.node-shell'));
-      if (element.classList.contains('node-shell')) targets.push(element);
-      targets.push(...shells);
-      for (const shell of targets) {
-        shell.classList.toggle('selected', node.id === id);
-        if (node.id === id) shell.setAttribute('data-selected', 'true');
-        else shell.removeAttribute('data-selected');
-      }
+  const markNodeSelection = (id: string, element: HTMLElement, selected: boolean): void => {
+    // 经典 preset 的根节点是 styled-components 的 [data-testid=node]（可能没有 .node-shell），
+    // 自定义节点是 .node-shell，LOD placeholder 是 [data-testid=node-lod]。三者都覆盖，
+    // 并把 id 透传到每个目标，方便后续 DOM 查询/点击映射。
+    const targets: HTMLElement[] = [];
+    const testNodes = Array.from(
+      element.querySelectorAll<HTMLElement>('[data-testid="node"], [data-testid="node-lod"]'),
+    );
+    const shells = Array.from(element.querySelectorAll<HTMLElement>('.node-shell'));
+    if (element.matches('[data-testid="node"], [data-testid="node-lod"], .node-shell')) targets.push(element);
+    targets.push(...testNodes, ...shells);
+    for (const target of targets) {
+      target.setAttribute('data-node-id', id);
+      target.classList.toggle('selected', selected);
+      if (selected) target.setAttribute('data-selected', 'true');
+      else target.removeAttribute('data-selected');
     }
   };
 
-  let selectedNodeId: string | null = null;
-  const clearNodeSelection = (): void => {
-    if (selectedNodeId === null) return;
-    selectedNodeId = null;
-    markSelectedNode(null);
+  /** 全图扫描只在显式改变选中集合/缩放切换时用；render 热路径走 markNodeSelection。 */
+  const markSelectedNodes = (ids: ReadonlySet<string>): void => {
+    for (const node of editor.getNodes()) {
+      const element = area.nodeViews.get(node.id)?.element;
+      if (!element) continue;
+      markNodeSelection(node.id, element, ids.has(node.id));
+    }
   };
+
+  const selectedNodeIds = new Set<string>();
+  const clearNodeSelection = (): void => {
+    if (selectedNodeIds.size === 0) return;
+    selectedNodeIds.clear();
+    markSelectedNodes(selectedNodeIds);
+  };
+
+  // T-032：pointerdown 的修饰键 + window keydown/keyup 双信号跟踪 Ctrl/Meta，
+  // 兼容某些路径下 pointerdown 事件不带修饰键信息的情况。
+  let additive = false;
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.ctrlKey || event.metaKey) additive = true;
+  };
+  const onKeyUp = (event: KeyboardEvent): void => {
+    if (!event.ctrlKey && !event.metaKey) additive = false;
+  };
+  const onWindowBlur = (): void => {
+    additive = false;
+  };
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onWindowBlur);
 
   // M4 A: stamp node id on the rendered DOM so the canvas click handler can map a
   // clicked title/control region back to a specific node instance for binding.
   area.addPipe((context) => {
     if (context.type === 'render' && context.data.type === 'node') {
-      context.data.element.setAttribute('data-node-id', context.data.payload.id);
-      // render 会重建节点子树（full ↔ placeholder 切换时），重放当前选中 id。
-      if (selectedNodeId === context.data.payload.id) markSelectedNode(selectedNodeId);
+      const id = context.data.payload.id;
+      context.data.element.setAttribute('data-node-id', id);
+      // render 会重建节点子树（full ↔ placeholder 切换时）；只重放当前节点，避免 O(n²)。
+      markNodeSelection(id, context.data.element, selectedNodeIds.has(id));
+    }
+    if (context.type === 'pointerdown') {
+      const event = context.data.event;
+      // 事件里明确带了修饰键状态就以此为准，避免 keyup 迟到一帧造成误判。
+      if (event.ctrlKey || event.metaKey) additive = true;
+      else if (event.ctrlKey === false && event.metaKey === false) additive = false;
+      // 点击空白画布取消端口选中：不碰 selectedPort 的业务绑定，只清节点视觉高亮。
+      const target = event.target;
+      if (target instanceof Element && !target.closest('.node-shell, [data-testid="node"], [data-testid="node-lod"]')) {
+        selectedNodeIds.clear();
+        markSelectedNodes(selectedNodeIds);
+      }
     }
     if (context.type === 'nodepicked') {
-      selectedNodeId = context.data.id;
-      // 延后到 React 完成重渲染后写 DOM，避免 area.update 把标记清掉。
-      requestAnimationFrame(() => markSelectedNode(selectedNodeId));
-      if (onNodePicked) onNodePicked(context.data.id);
-    }
-    // 点击空白画布取消端口选中：不碰 selectedPort 的业务绑定，只清节点视觉高亮。
-    if (context.type === 'pointerdown') {
-      const target = context.data.event.target;
-      if (target instanceof Element && !target.closest('.node-shell, [data-testid="node"]')) {
-        clearNodeSelection();
+      const id = context.data.id;
+      if (additive) {
+        if (selectedNodeIds.has(id)) selectedNodeIds.delete(id);
+        else selectedNodeIds.add(id);
+      } else {
+        selectedNodeIds.clear();
+        selectedNodeIds.add(id);
       }
+      // 延后到 React 完成重渲染后写 DOM，避免 area.update 把标记清掉。
+      requestAnimationFrame(() => markSelectedNodes(selectedNodeIds));
+      if (onNodePicked) onNodePicked(id);
     }
     return context;
   });
@@ -173,6 +216,9 @@ export async function createEditor(
     Connection: ClassicPreset.Connection,
     destroy: () => {
       if (zoomFrame) cancelAnimationFrame(zoomFrame);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onWindowBlur);
       resetLod();
       void area.destroy();
     },
@@ -211,13 +257,19 @@ export async function createEditor(
       if (getLod() === 'full' && zoom < LOD_ENTER_THRESHOLD) captureSizes();
       await area.area.zoom(zoom);
       setLodZoom(zoom);
-      // render 管道只给当前节点重放；这里补一次全图扫描，确保切换后旧节点也清干净。
-      requestAnimationFrame(() => {
-        if (selectedNodeId !== null) markSelectedNode(selectedNodeId);
-        else clearNodeSelection();
-      });
+      // render 管道会重放；这里补一次全图扫描，确保切换后 placeholder/full 都同步。
+      requestAnimationFrame(() => markSelectedNodes(selectedNodeIds));
     },
     clearNodeSelection,
+    getSelectedNodeIds: () => [...selectedNodeIds],
+    setSelectedNodeIds: (ids: readonly string[]) => {
+      selectedNodeIds.clear();
+      const existing = new Set(editor.getNodes().map((node) => node.id));
+      for (const id of ids) {
+        if (existing.has(id)) selectedNodeIds.add(id);
+      }
+      markSelectedNodes(selectedNodeIds);
+    },
     addNodeKind: (kind: NodeKind, x: number, y: number) => addNode(handle, kind, x, y),
   };
 

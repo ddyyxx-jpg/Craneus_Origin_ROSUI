@@ -2,7 +2,7 @@
 
 ROS 2 可视化节点编辑器 —— 目标：像 ComfyUI 一样在画布节点上直接编辑参数（真实 DOM 控件、连线即隐藏、可绑定运行时参数）。
 
-当前状态：**M5 进行中（保存/加载 + LOD + AC-1..5 验收已完成）** —— GraphIR 文件存盘/加载（`.rosui.json`，含节点位置、控件值、运行期绑定元数据与连线）与缩放 LOD 混合渲染（<0.32 切占位、>0.38 恢复、200 节点混合图 + 149 连线最终门禁首帧 full 756ms / placeholder 341ms）都跑通；本分支 48 条 Playwright（46 条默认执行 + perf 2 条显式开启，`e2e/ac-acceptance.spec.ts` 新增 AC-1/AC-4 两条真 ROS 用例），`vitest` 52 例。M3 的 Pose 复杂 DOM 控件、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。二轮评审修复：#3（P1-A 回滚恢复 runtime 绑定、P2-A 提示合并、P2-B 回滚 e2e）与 #4（P1-B 低缩放占位尺寸按类型取值、P2-C 真实点击选中态、P2-D perf 主线程工作量指标）均闭环，P2-E webServer 直接 exec vite 使全量 e2e 自然退出。T-033 把 AC-4 暴露的 transport `close` 未接重连缺口补上（断线时待回包调用立即失败、不误报 5s 超时），并把 `connected:reconnected` 暴露为 `ros-status` 的 `data-detail`；e2e 用 detached 进程组身份 + `/proc` starttime 整组回收 rosbridge/rosapi，消除重复 `/rosapi` 抢答造成的 flake。逐条证据见 [`docs/reviews/M5-acceptance.md`](docs/reviews/M5-acceptance.md)。
+当前状态：**M5 已完成（保存/加载 + LOD + AC-1..5 验收 + 撤销/重做与复制粘贴）** —— GraphIR 文件存盘/加载（`.rosui.json`，含节点位置、控件值、运行期绑定元数据与连线）与缩放 LOD 混合渲染（<0.32 切占位、>0.38 恢复、200 节点混合图 + 149 连线最终门禁首帧 full 746ms / placeholder 327ms）都跑通；本分支 52 条 Playwright（50 条默认执行 + perf 2 条显式开启，`e2e/ac-acceptance.spec.ts` 新增 AC-1/AC-4 两条真 ROS 用例，`e2e/undo-copy-paste.spec.ts` 新增 4 条 T-032 用例），`vitest` 61 例。M3 的 Pose 复杂 DOM 控件、M4 的运行时绑定/参数浏览器/Inspector/Script 均已并入。二轮评审修复：#3（P1-A 回滚恢复 runtime 绑定、P2-A 提示合并、P2-B 回滚 e2e）与 #4（P1-B 低缩放占位尺寸按类型取值、P2-C 真实点击选中态、P2-D perf 主线程工作量指标）均闭环，P2-E webServer 直接 exec vite 使全量 e2e 自然退出。T-033 把 AC-4 暴露的 transport `close` 未接重连缺口补上（断线时待回包调用立即失败、不误报 5s 超时），并把 `connected:reconnected` 暴露为 `ros-status` 的 `data-detail`；e2e 用 detached 进程组身份 + `/proc` starttime 整组回收 rosbridge/rosapi，消除重复 `/rosapi` 抢答造成的 flake。T-032 落地 GraphIR 快照栈（深 100）、Ctrl+Z/Y/C/V、多选、粘贴时 ROS 绑定转静态并重映射 `binding.node`、异步静默恢复与 P2 复核修补。逐条证据见 [`docs/reviews/M5-acceptance.md`](docs/reviews/M5-acceptance.md) 与 [`docs/reviews/M5-t032-acceptance.md`](docs/reviews/M5-t032-acceptance.md)。
 
 - UI 改值 → `rosapi/set_param` → 节点参数真的变；外部 `ros2 param set` → `/parameter_events` → 控件 1s 内跟着变。
 - 已绑定：`Gain.gain`、`Switch.enabled`、`Mode.mode`、`Pose.pose`（`/rosui_demo`）；`Threshold.value` 故意不绑定作对照。
@@ -33,11 +33,11 @@ corepack pnpm install     # 本机 PATH 无裸 pnpm，统一用 corepack
 corepack pnpm dev         # 起前端（Vite，固定 5180）
 corepack pnpm build       # tsc + vite build
 corepack pnpm check       # tsc --noEmit ×2 + vitest（IR 5 例）
-corepack pnpm -w exec vitest --run apps/web/src packages/ir  # 全量单测（52 例）
+corepack pnpm -w exec vitest --run apps/web/src packages/ir  # 全量单测（61 例）
 
 scripts/ros-up.sh             # 起 rosbridge :9090（无 root，见下）
 scripts/demo-stack.sh         # rosbridge + demo 参数节点一起起（--check 自检读写/校验）
-node node_modules/@playwright/test/cli.js test   # 48 条 e2e（46 默认执行 + perf 2 默认跳过；AC-1/AC-4、binding/m3 会自己拉起 demo 栈；webServer 直接 exec vite 保证自然退出）
+node node_modules/@playwright/test/cli.js test   # 52 条 e2e（50 默认执行 + perf 2 默认跳过；AC-1/AC-4、binding/m3 会自己拉起 demo 栈；webServer 直接 exec vite 保证自然退出）
 ROSUI_PERF=1 node node_modules/@playwright/test/cli.js test e2e/perf.spec.ts  # 200 节点混合图压测（需显式开启）
 node e2e/capture-ac.mjs       # AC-5：100 节点拖动/缩放 longtask 采样 + 截图（需 5180 dev server）
 scripts/test-demo-params.sh   # 验证 demo 节点 4 类参数与校验

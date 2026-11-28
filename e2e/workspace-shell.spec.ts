@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 async function ready(page: import('@playwright/test').Page): Promise<void> {
   await page.goto('/');
@@ -16,6 +16,84 @@ function readGraph(page: import('@playwright/test').Page) {
     };
   });
 }
+
+/** 面板与画布几何：新增节点必须整框落在 .canvas 内，且中心命中节点自身。 */
+async function expectNewNodeVisible(page: Page, addTestId: string): Promise<void> {
+  const before = await page.evaluate(() => {
+    const handle = (
+      window as unknown as {
+        __rosui?: { getSelectedNodeIds: () => string[]; editor: { getNodes: () => unknown[] } };
+      }
+    ).__rosui;
+    if (!handle) throw new Error('window.__rosui 未挂载');
+    return { ids: handle.getSelectedNodeIds(), count: handle.editor.getNodes().length };
+  });
+
+  await page.getByTestId(addTestId).click();
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const handle = (
+            window as unknown as { __rosui?: { editor: { getNodes: () => unknown[] } } }
+          ).__rosui;
+          return handle?.editor.getNodes().length ?? -1;
+        }),
+      { timeout: 10_000 },
+    )
+    .toBe(before.count + 1);
+
+  const geometry = await page.evaluate((previousIds) => {
+    const canvas = document.querySelector('.canvas');
+    const handle = (
+      window as unknown as {
+        __rosui?: { getSelectedNodeIds: () => string[]; editor: { getNodes: () => unknown[] } };
+      }
+    ).__rosui;
+    if (!canvas || !handle) throw new Error('canvas 或 __rosui 不存在');
+    const canvasRect = canvas.getBoundingClientRect();
+    const nodes = Array.from(document.querySelectorAll('[data-testid="node"]'));
+    const node = nodes.find((element) => {
+      const id = element.getAttribute('data-node-id');
+      return id && !previousIds.includes(id);
+    });
+    if (!node) throw new Error('新增节点未渲染');
+    const rect = node.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(centerX, centerY);
+    return {
+      nodeId: node.getAttribute('data-node-id'),
+      inside:
+        rect.left >= canvasRect.left &&
+        rect.top >= canvasRect.top &&
+        rect.right <= canvasRect.right &&
+        rect.bottom <= canvasRect.bottom,
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      canvas: {
+        left: canvasRect.left,
+        top: canvasRect.top,
+        right: canvasRect.right,
+        bottom: canvasRect.bottom,
+      },
+      hitIsNode: Boolean(hit && (node.contains(hit) || hit.contains(node))),
+      hitTag: hit?.tagName ?? '',
+      hitClass: hit instanceof Element ? hit.className : '',
+    };
+  }, before.ids);
+
+  expect(geometry.inside, `node rect ${JSON.stringify(geometry.rect)} outside ${JSON.stringify(geometry.canvas)}`).toBe(true);
+  expect(
+    geometry.hitIsNode,
+    `center hit ${geometry.hitTag}.${geometry.hitClass}, expected node ${geometry.nodeId}`,
+  ).toBe(true);
+}
+
+test('1280×720 新增 Gain / Script 节点完整落在画布可视区', async ({ page }) => {
+  await ready(page);
+  await expectNewNodeVisible(page, 'add-gain');
+  await expectNewNodeVisible(page, 'add-script');
+});
 
 test.describe('M6 Phase 1 UI Shell', () => {
   test('五个面板区域存在，初始图仍是 5 节点 / 1 连线', async ({ page }) => {

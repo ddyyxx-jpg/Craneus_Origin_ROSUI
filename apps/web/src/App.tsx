@@ -82,6 +82,7 @@ export function App() {
   const [message, setMessage] = useState('正在初始化画布…');
   const [lastGain, setLastGain] = useState<number | null>(null);
   const [graph, setGraph] = useState<GraphIR | null>(null);
+  const [graphCounts, setGraphCounts] = useState({ nodes: 0, edges: 0 });
   const [url, setUrl] = useState('ws://127.0.0.1:9090');
   const [selectedPort, setSelectedPort] = useState<SelectedPort | null>(null);
   const [localToast, setLocalToast] = useState('');
@@ -96,6 +97,8 @@ export function App() {
   const autoCommitTimerRef = useRef<number | undefined>(undefined);
   const historyQueueRef = useRef<Promise<void>>(Promise.resolve());
   const devApiRef = useRef<HistoryDevApi | null>(null);
+  /** 加载期间撤销/重做/复制/粘贴必须忽略，否则会静默把文件加载替换成旧图。 */
+  const loadInFlightRef = useRef(false);
 
   // M5：错误提示统一经此出口，失败类传 FailureInput，成功/清空类直接传字符串。
   const pushToast = useCallback((message: FailureInput | string): void => {
@@ -107,9 +110,14 @@ export function App() {
   // M3/M5：所有节点的 unregister 都收进 allUnregisters，加载前统一清空，避免旧订阅泄漏。
   const allUnregisters = useRef<Array<() => void>>([]);
 
-  const refresh = useCallback(() => {
-    setGraph(snapshot(handleRef.current));
+  const refreshFromIR = useCallback((ir: GraphIR | null): void => {
+    setGraph(ir);
+    setGraphCounts({ nodes: ir?.nodes.length ?? 0, edges: ir?.edges.length ?? 0 });
   }, []);
+
+  const refresh = useCallback(() => {
+    refreshFromIR(snapshot(handleRef.current));
+  }, [refreshFromIR]);
 
   /** 无差别把当前图推入 undo 栈；显式 DEV commit 与加载/粘贴后的强制提交都走这里。 */
   const commitCurrentGraph = useCallback((): void => {
@@ -263,7 +271,7 @@ export function App() {
 
         setReady(true);
         setMessage('就绪 — 5 个节点（Gain/Threshold/Label/Mode/Switch），1 条连线。');
-        setGraph(snapshot(created));
+        refreshFromIR(snapshot(created));
         initialiseHistory();
 
         // T-032：初始图建成后才挂自动提交管道，避免初始化过程被当成用户动作。
@@ -306,6 +314,7 @@ export function App() {
     initialiseHistory,
     onValue,
     refresh,
+    refreshFromIR,
     scheduleGraphCommit,
     selectNode,
   ]);
@@ -332,11 +341,6 @@ export function App() {
   const connected = binding.status === 'connected';
   const activeWorkspace =
     WORKSPACE_ROOTS.find((root) => root.id === activeWorkspaceId) ?? WORKSPACE_ROOTS[0];
-  const irGraph = graph ?? (handleRef.current ? toGraphIR(handleRef.current) : null);
-  const graphCounts = {
-    nodes: irGraph?.nodes.length ?? 0,
-    edges: irGraph?.edges.length ?? 0,
-  };
 
   const { bind, unbind } = binding;
   /** 动态新增的节点也要注册进绑定层，否则参数浏览器能「绑定成功」但实际没有订阅。 */
@@ -422,6 +426,7 @@ export function App() {
     async (editorHandle: EditorHandle, ir: unknown, restoreSnapshot: boolean): Promise<boolean> => {
       const before = restoreSnapshot ? serializeGraph(editorHandle) : null;
       let cleared = false;
+      loadInFlightRef.current = true;
       restoringRef.current = true;
       if (autoCommitTimerRef.current !== undefined) {
         window.clearTimeout(autoCommitTimerRef.current);
@@ -436,6 +441,7 @@ export function App() {
 
         setSelectedPort(null);
         setLastGain(null);
+        // loadGraph 已 clear 画布：从当前图刷新计数，避免 StatusBar 显示旧图数量。
         refresh();
         // P2-A：绑定失败与脚本来源提示合并展示，不再互相覆盖。
         pushToast(loadToast(failedBindings, result.scriptCodeCount));
@@ -453,7 +459,7 @@ export function App() {
             refresh();
           } catch {
             pushToast({ kind: 'load', reason: '画布已重置，请用备份恢复' });
-            setGraph(null);
+            refreshFromIR(null);
             setSelectedPort(null);
             setLastGain(null);
             lastCommittedRef.current = JSON.stringify(serializeGraph(editorHandle));
@@ -469,9 +475,17 @@ export function App() {
         return false;
       } finally {
         restoringRef.current = false;
+        loadInFlightRef.current = false;
       }
     },
-    [clearDynamicRegistrations, commitCurrentGraph, refresh, restoreGraphBindings, pushToast],
+    [
+      clearDynamicRegistrations,
+      commitCurrentGraph,
+      refresh,
+      refreshFromIR,
+      restoreGraphBindings,
+      pushToast,
+    ],
   );
 
   const handleLoadGraph = useCallback(
@@ -561,6 +575,7 @@ export function App() {
   const undoHistory = useCallback(
     (): Promise<void> =>
       enqueueHistoryAction(async () => {
+        if (loadInFlightRef.current) return;
         const previousState = historyRef.current;
         const step = undoSnapshot(previousState);
         if (!step.ir) return;
@@ -573,6 +588,7 @@ export function App() {
   const redoHistory = useCallback(
     (): Promise<void> =>
       enqueueHistoryAction(async () => {
+        if (loadInFlightRef.current) return;
         const previousState = historyRef.current;
         const step = redoSnapshot(previousState);
         if (!step.ir) return;
@@ -583,8 +599,8 @@ export function App() {
   );
 
   const copySelection = useCallback((): void => {
-    // 异步恢复（undo/redo/粘贴）期间画布可能只重建到一半；忽略此期间的复制，避免把中间态写入剪贴板。
-    if (restoringRef.current) return;
+    // 异步恢复/加载期间画布可能只重建到一半；忽略此期间的复制，避免把中间态写入剪贴板。
+    if (restoringRef.current || loadInFlightRef.current) return;
     const editorHandle = handleRef.current;
     if (!editorHandle) return;
     const ir = serializeGraph(editorHandle);
@@ -595,6 +611,7 @@ export function App() {
   const pasteSelection = useCallback(
     (): Promise<void> =>
       enqueueHistoryAction(async () => {
+        if (loadInFlightRef.current) return;
         const editorHandle = handleRef.current;
         const clipboard = clipboardRef.current;
         if (!editorHandle || !clipboard || clipboard.nodes.length === 0) return;
@@ -692,6 +709,65 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [copySelection, pasteSelection, redoHistory, undoHistory]);
 
+  const addNodePosition = useCallback((width: number, height: number) => {
+    const editorHandle = handleRef.current;
+    if (!editorHandle) return null;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return null;
+    const transform = editorHandle.area.area.transform;
+    // 节点 DOM 以左上定位；保留 24px 边距，保证整框落在当前视口内。
+    const minX = (24 - transform.x) / transform.k;
+    const minY = (24 - transform.y) / transform.k;
+    const maxX = (rect.width - 24 - transform.x) / transform.k - width;
+    const maxY = (rect.height - 24 - transform.y) / transform.k - height;
+    if (maxX < minX || maxY < minY) return null;
+    const clamp = (value: number, min: number, max: number) =>
+      Math.max(min, Math.min(value, Math.max(min, max)));
+    // 候选点是 client 坐标，必须先减 canvas 原点再减 area transform。
+    const graphX = (clientX: number) => (clientX - rect.left - transform.x) / transform.k;
+    const graphY = (clientY: number) => (clientY - rect.top - transform.y) / transform.k;
+
+    // 用已有节点的屏幕 rect 做占用检测；自由画布上从左上起按 24px 阶梯找第一个不重叠空位。
+    const occupied = Array.from(document.querySelectorAll('[data-testid="node"], [data-testid="node-lod"]'))
+      .map((element) => element.getBoundingClientRect())
+      .filter((box) => box.width > 0 && box.height > 0);
+    const nodeWidth = width * transform.k;
+    const nodeHeight = height * transform.k;
+    const overlaps = (left: number, top: number): boolean =>
+      occupied.some(
+        (box) =>
+          left < box.right + 8 &&
+          left + nodeWidth + 8 > box.left &&
+          top < box.bottom + 8 &&
+          top + nodeHeight + 8 > box.top,
+      );
+    const left = rect.left + 24;
+    const top = rect.top + 24;
+    const step = 24;
+    const columns = Math.max(1, Math.floor((rect.width - 48 - nodeWidth) / step) + 1);
+    const rows = Math.max(1, Math.floor((rect.height - 48 - nodeHeight) / step) + 1);
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const candidateLeft = left + column * step;
+        const candidateTop = top + row * step;
+        if (candidateLeft + nodeWidth > rect.right - 24) continue;
+        if (candidateTop + nodeHeight > rect.bottom - 24) continue;
+        if (overlaps(candidateLeft, candidateTop)) continue;
+        return { x: graphX(candidateLeft), y: graphY(candidateTop) };
+      }
+    }
+
+    // 视口被占满时退回中心附近阶梯偏移，仍保证节点整框在可视区域内。
+    const centerX = (rect.width / 2 - transform.x) / transform.k;
+    const centerY = (rect.height / 2 - transform.y) / transform.k;
+    const count = editorHandle.editor.getNodes().length;
+    const staircase = (count % 4) * 24;
+    return {
+      x: clamp(centerX - width / 2 + staircase, minX, maxX),
+      y: clamp(centerY - height / 2 + staircase, minY, maxY),
+    };
+  }, []);
+
   const toolbar = (
     <header className="toolbar">
       <strong>ROSUI</strong>
@@ -741,8 +817,9 @@ export function App() {
         disabled={!ready}
         onClick={() => {
           const editorHandle = handleRef.current;
-          if (!editorHandle) return;
-          void addNode(editorHandle, 'gain', 300, 520, onValue).then((node) => {
+          const position = addNodePosition(180, 119);
+          if (!editorHandle || !position) return;
+          void addNode(editorHandle, 'gain', position.x, position.y, onValue).then((node) => {
             registerDynamic(node);
             refresh();
           });
@@ -756,12 +833,12 @@ export function App() {
         disabled={!ready}
         onClick={() => {
           const editorHandle = handleRef.current;
-          if (!editorHandle) return;
-          // M3：Pose 不在默认 5 节点里，点按钮加到画布空白处并注册绑定。
+          const position = addNodePosition(240, 150);
+          if (!editorHandle || !position) return;
+          // M3：Pose 不在默认 5 节点里，点按钮加到当前画布可见区域并注册绑定。
           const node = createNode('pose', onValue);
-          const count = editorHandle.editor.getNodes().length;
           void editorHandle.editor.addNode(node).then(() =>
-            editorHandle.area.translate(node.id, { x: 300 + count * 30, y: 520 + count * 20 }),
+            editorHandle.area.translate(node.id, position),
           );
           const adapter = createControlAdapter({
             nodeType: node.spec.type,
@@ -795,8 +872,9 @@ export function App() {
         disabled={!ready}
         onClick={() => {
           const editorHandle = handleRef.current;
-          if (!editorHandle) return;
-          void addNode(editorHandle, 'inspector', 300, 700, onValue).then(() => refresh());
+          const position = addNodePosition(180, 119);
+          if (!editorHandle || !position) return;
+          void addNode(editorHandle, 'inspector', position.x, position.y, onValue).then(() => refresh());
         }}
       >
         + Inspector
@@ -807,8 +885,9 @@ export function App() {
         disabled={!ready}
         onClick={() => {
           const editorHandle = handleRef.current;
-          if (!editorHandle) return;
-          void addNode(editorHandle, 'script', 600, 700, onValue).then((node) => {
+          const position = addNodePosition(252, 273);
+          if (!editorHandle || !position) return;
+          void addNode(editorHandle, 'script', position.x, position.y, onValue).then((node) => {
             registerDynamic(node);
             refresh();
           });

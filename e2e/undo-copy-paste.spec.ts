@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import type { GraphIR } from '../packages/ir/src';
 
@@ -69,6 +69,80 @@ async function readGraph(page: Page): Promise<GraphIR> {
 async function expectNoToast(page: Page): Promise<void> {
   await expect(page.getByTestId('ros-toast')).toHaveCount(0);
 }
+
+test('加载期间 Ctrl+Z 不会静默取消加载', async ({ page }) => {
+  await ready(page);
+  const origin = await readGraph(page);
+  expect(origin.nodes).toHaveLength(5);
+
+  const loaded = {
+    version: 1,
+    nodes: Array.from({ length: 30 }, (_, index) => ({
+      id: `loaded-${index}`,
+      type: 'Gain',
+      position: { x: 80 + (index % 5) * 200, y: 80 + Math.floor(index / 5) * 130 },
+      params: {
+        gain: {
+          node: `loaded-${index}`,
+          param: 'gain',
+          valueType: 'double',
+          mode: 'static',
+          widget: 'number',
+          value: index + 1,
+        },
+      },
+    })),
+    edges: [],
+  };
+  const path = '/tmp/undo-during-load.rosui.json';
+  await writeFile(path, JSON.stringify(loaded, null, 2));
+
+  // 让第一次 loadGraph 停在 clear() 之后、建节点之前，制造确定的加载窗口。
+  await page.evaluate(() => {
+    const handle = (
+      window as unknown as {
+        __rosui?: { editor: { clear: () => Promise<void>; getNodes: () => unknown[] } };
+      }
+    ).__rosui;
+    if (!handle) throw new Error('window.__rosui 未挂载');
+    const original = handle.editor.clear.bind(handle.editor);
+    let paused = false;
+    handle.editor.clear = async () => {
+      const result = await original();
+      if (!paused) {
+        paused = true;
+        await new Promise<void>((resolve) => {
+          const gate = window as unknown as { __loadGate?: () => void };
+          gate.__loadGate = resolve;
+        });
+      }
+      return result;
+    };
+  });
+
+  await page.getByTestId('load-graph-input').setInputFiles(path);
+  await expect
+    .poll(() => graphCounts(page).then((counts) => counts.nodes), { timeout: 10_000 })
+    .toBe(0);
+  await page.keyboard.press('Control+z');
+  // 释放 clear() 闸门后，加载必须自行完成；Ctrl+Z 已在加载窗口内按下。
+  await page.evaluate(() => {
+    const gate = (window as unknown as { __loadGate?: () => void }).__loadGate;
+    if (!gate) throw new Error('__loadGate 未就绪');
+    gate();
+  });
+  await expect
+    .poll(() => graphCounts(page).then((counts) => counts.nodes), { timeout: 10_000 })
+    .toBe(30);
+  await page.waitForTimeout(100);
+
+  const after = await readGraph(page);
+  expect(after.nodes).toHaveLength(30);
+  expect(after.nodes.map((node) => node.id)).toEqual(loaded.nodes.map((node) => node.id));
+  expect(after.nodes.some((node) => origin.nodes.some((old) => old.id === node.id))).toBe(false);
+  expect((await history(page)).undo).toBeGreaterThanOrEqual(1);
+  await expectNoToast(page);
+});
 
 test('节点增删：新增 Gain 后 Ctrl+Z / Ctrl+Y 撤销重做且不弹 toast', async ({ page }) => {
   await ready(page);

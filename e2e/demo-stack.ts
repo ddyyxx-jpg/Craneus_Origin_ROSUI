@@ -96,6 +96,7 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: numbe
 /** 起 rosbridge + demo 节点（若已在跑则复用）；返回清理函数。 */
 export async function startDemoStack(): Promise<() => void> {
   let group: DetachedGroup | null = null;
+  let rosapiGroup: DetachedGroup | null = null;
 
   /** 每次栈就绪后把 demo 参数复位，避免上一个 spec / 上一次运行留下的值污染断言。 */
   const resetDemoParams = (): void => {
@@ -114,6 +115,46 @@ export async function startDemoStack(): Promise<() => void> {
     }
   };
 
+  /**
+   * rosapi 是 rosbridge 的参数/图服务入口；AC-4 重启 rosbridge 或复用外部 9090 时，
+   * 9090 可能已经可连但 rosapi 还没就绪。只看 hasNode 会过早复用，导致后续 ParamBrowser
+   * 的 `/rosapi/get_param_names` 直接超时。
+   */
+  const hasRosapi = (): boolean => {
+    try {
+      return ros2('timeout 5 ros2 service list').includes('/rosapi/get_param_names');
+    } catch {
+      return false;
+    }
+  };
+
+  const startRosapi = (): void => {
+    if (rosapiGroup) return;
+    const proc = spawn(
+      'bash',
+      ['-lc', 'set +u; source /opt/ros/jazzy/setup.bash; exec ros2 run rosapi rosapi_node'],
+      {
+        cwd: ROOT,
+        env: ROS_ENV,
+        detached: true,
+        stdio: 'ignore',
+      },
+    );
+    proc.unref();
+    rosapiGroup = captureDetachedGroup(proc);
+  };
+
+  const ensureRosapi = async (): Promise<void> => {
+    try {
+      await waitFor(hasRosapi, 10_000);
+      return;
+    } catch {
+      // 外部 9090 只有 rosbridge、没有 rosapi：补起一个 rosapi 节点。
+      startRosapi();
+      await waitFor(hasRosapi, 60_000);
+    }
+  };
+
   const portAvailable = await portOpen();
   if (!portAvailable) {
     stack = spawn(path.join(ROOT, 'scripts/demo-stack.sh'), [], {
@@ -127,8 +168,12 @@ export async function startDemoStack(): Promise<() => void> {
     await waitFor(portOpen, 60_000);
   } else if (hasNode()) {
     // 外部栈已完整可用：不归我们清理，但仍复位参数，避免上个 spec 的值串味。
+    await ensureRosapi();
     resetDemoParams();
-    return () => undefined;
+    return () => {
+      if (rosapiGroup) killDetachedGroup(rosapiGroup);
+      rosapiGroup = null;
+    };
   } else {
     // 9090 可能来自残留 rosbridge，而参数服务已失联：补起 demo 节点（脚本会复用已监听的 rosbridge）。
     stack = spawn(path.join(ROOT, 'scripts/demo-stack.sh'), [], {
@@ -141,10 +186,14 @@ export async function startDemoStack(): Promise<() => void> {
     group = captureDetachedGroup(stack);
   }
   await waitFor(hasNode, 60_000);
+  await ensureRosapi();
   resetDemoParams();
 
   return () => {
     if (group) killDetachedGroup(group);
+    if (rosapiGroup) killDetachedGroup(rosapiGroup);
+    group = null;
+    rosapiGroup = null;
     stack = null;
   };
 }

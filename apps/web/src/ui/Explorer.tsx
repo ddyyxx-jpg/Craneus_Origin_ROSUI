@@ -35,7 +35,7 @@ export function Explorer({
   return (
     <section className="explorer-dock" data-testid="workspace-explorer">
       <div className="dock-title">Explorer</div>
-      <div className="explorer-section-title">工作区</div>
+      <div className="explorer-section-title">工作区（Phase 2 接入，当前为静态占位）</div>
       <div className="workspace-list">
         {roots.map((root) => (
           <button
